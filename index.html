@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <!--This whole style block has been generated with the help of copilot-->
+    <style>
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        background: #111;
+        color: white;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+      }
+
+      #loading-bar-container {
+        width: 60%;
+        height: 18px;
+        background: #333;
+        border-radius: 3px;
+        margin-top: 20px;
+      }
+
+      #loading-bar {
+        width: 0%;
+        height: 100%;
+        background: #4caf50;
+        transition: width 0.2s linear;
+      }
+
+      #world-controls {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        background: rgba(30, 30, 30, 0.8);
+        padding: 12px 16px;
+        border-radius: 6px;
+        color: white;
+        font-family: sans-serif;
+        z-index: 9999;
+      }
+
+      #world-controls input[type="number"] {
+        width: 120px;
+        margin-bottom: 8px;
+      }
+
+      #world-controls input[type="range"] {
+        width: 160px;
+      }
+
+      #world-controls button {
+        margin-top: 12px;
+        padding: 6px 12px;
+        background: #4caf50;
+        border: none;
+        color: white;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+
+      #world-controls button:hover {
+        background: #45a047;
+      }
+
+      #hud {
+        position: fixed;
+        inset: 0;
+        pointer-events: none; /* don't block clicks/pointer-lock */
+        z-index: 5000; /* above canvas, below loading/world-controls (9999) */
+      }
+
+      /* Crosshair in the center */
+      #crosshair {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 14px;
+        height: 14px;
+        transform: translate(-50%, -50%);
+      }
+
+      #crosshair::before,
+      #crosshair::after {
+        content: "";
+        position: absolute;
+        background: white; /* crosshair color */
+      }
+
+      /* vertical line */
+      #crosshair::before {
+        width: 2px;
+        height: 14px;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      /* horizontal line */
+      #crosshair::after {
+        width: 14px;
+        height: 2px;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      /* Blue underwater tint */
+      #water-tint {
+        position: absolute;
+        inset: 0;
+        background: rgba(70, 120, 255, 0.25); /* blue + transparency */
+        mix-blend-mode: screen; /* optional, looks nicer */
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s ease-out; /* smooth fade */
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- ===== World Generation Control Panel ===== -->
+    <!--This div element (world-controls) has been generated with the help of copilot-->
+    <div id="world-controls">
+      <h3>World Generation</h3>
+
+      <label>Seed:</label>
+      <input type="number" id="seed-input" value="4061375" />
+
+      <label>Chunk Radius: <span id="radius-value">5</span></label>
+      <input type="range" id="radius-slider" min="1" max="10" value="5" />
+
+      <button id="regen-btn">Regenerate World</button>
+    </div>
+
+    <!--This div element (loading-screen) has been generated with the help of copilot-->
+    <div id="loading-screen">
+      <div id="loading-text">Generating world…</div>
+      <div id="loading-bar-container">
+        <div id="loading-bar"></div>
+      </div>
+    </div>
+
+    <div id="screenDiv"></div>
+
+    <!-- === HUD overlay (crosshair + underwater tint) (generated with the help of copilot) === -->
+    <div id="hud">
+      <div id="water-tint"></div>
+      <div id="crosshair"></div>
+    </div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "../libs/threeJS/build/three.module.js"
+        }
+      }
+    </script>
+
+    <script src="main.js" type="module" defer></script>
+  </body>
+</html>
+
+<!-- CS559 2025 Workbook -->
