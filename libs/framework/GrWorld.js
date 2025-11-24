@@ -130,6 +130,7 @@ export class GrWorld {
               ? params.renderparams
               : { preserveDrawingBuffer: true }
           );
+    this.renderer.autoClear = false;
 
     // width and height are tricky, since they can come from many places
     let width = 600;
@@ -606,7 +607,16 @@ export class GrWorld {
    */
   draw() {
     this.lastRenderTime = performance.now();
+    this.renderer.clear();
     this.renderer.render(this.active_scene, this.active_camera);
+    if (
+      this.blockPicker &&
+      this.blockPicker.visible &&
+      !this.renderer.autoClear
+    ) {
+      this.renderer.clearDepth();
+      this.blockPicker.render();
+    }
   }
 
   /**

@@ -7,7 +7,7 @@ export class GrRain extends GrTickingObject {
   constructor(
     world,
     {
-      count = 700,
+      count = 1500,
       boxWidth = 40,
       boxHeight = 25,
       boxDepth = 40,
@@ -75,21 +75,35 @@ export class GrRain extends GrTickingObject {
     group.add(lines);
 
     // Spawn initial drops around camera
-    const cam = this.world.camera;
     for (let i = 0; i < count; i++) {
-      this._spawn(i, cam);
+      this._spawn(i);
     }
+
+    this.setVisible(true);
+  }
+
+  _getCenter() {
+    // If you later wire the player in (rain.player = player),
+    // we use the player's position.
+    if (this.player && this.player.pos) {
+      return this.player.pos;
+    }
+    // Fallback: center around the camera
+    const cam = this.world.camera;
+    return cam ? cam.position : new T.Vector3();
   }
 
   // Spawn streak i in front of camera
-  _spawn(i, cam) {
-    // Spawn within bounding box in camera space
+  // Spawn streak i around the center (player or camera)
+  _spawn(i) {
+    const center = this._getCenter();
+
+    // Random point in an axis-aligned box centered on `center`
     const x = (Math.random() - 0.5) * this.boxWidth;
     const y = (Math.random() - 0.5) * this.boxHeight;
-    const z = -(5 + Math.random() * this.boxDepth);
+    const z = (Math.random() - 0.5) * this.boxDepth;
 
-    const local = new T.Vector3(x, y, z);
-    const worldPos = cam.localToWorld(local);
+    const worldPos = new T.Vector3(center.x + x, center.y + y, center.z + z);
 
     const idx = i * 6;
 
@@ -160,7 +174,7 @@ export class GrRain extends GrTickingObject {
 
       // If drop fell below camera, respawn near camera again
       if (pos[idx + 1] < cam.position.y - this.boxHeight) {
-        this._spawn(i, cam);
+        this._spawn(i);
       }
     }
 

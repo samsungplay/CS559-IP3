@@ -34,6 +34,7 @@ import { GrSunAndMoon } from "./sun_and_moon.js";
 import { GrRain } from "./rain.js";
 import { createWaterMaterial, GrWaterEnvProbe } from "./water_material.js";
 import { atlasTexture } from "./block_factory.js";
+import { BlockPicker } from "./ui.js";
 /**m
  * The Graphics Town Main -
  * This builds up the world and makes it go...
@@ -89,6 +90,9 @@ let world = new GrWorld({
   groundplane: false, //no need for ground - I shall make it myself
   lights: [new T.AmbientLight("white", 0.1)],
   where: document.getElementById("screenDiv"),
+  renderparams: {
+    autoClear: false,
+  },
 });
 
 let voxelWorldInstance;
@@ -226,11 +230,8 @@ async function generateWorld(world, seed = 205, radius = 5) {
   );
 
   world.add(player);
-  setTimeout(() => {
-    player.setHeldItem(BLOCK.DIRT);
-  }, 2000);
 
-  return vw;
+  return [vw, player];
 }
 
 // this function has been generated with the help of copilot
@@ -252,8 +253,25 @@ async function regenerateWorld() {
     world.objects = []; // Clear GrObjects tracking
   }
 
+  let player = null;
+
   // Pass seed + radius into main()
-  voxelWorldInstance = await generateWorld(world, seed, radius);
+  [voxelWorldInstance, player] = await generateWorld(world, seed, radius);
+
+  const allBlockIds = Object.values(BLOCK).filter((id) => id !== BLOCK.AIR);
+
+  world.blockPicker = new BlockPicker(
+    world.renderer,
+    allBlockIds,
+    (blockId) => {
+      player.setHeldItem(blockId);
+    },
+    {
+      domElement: world.renderer.domElement,
+      iconsPerRow: 9,
+      rowsVisible: 5,
+    }
+  );
 }
 
 ///////////////////////////////////////////////////////////////
@@ -271,7 +289,7 @@ const main = async () => {
       document.getElementById("radius-value").innerText = e.target.value;
     });
   };
-  voxelWorldInstance = await generateWorld(world);
+  await regenerateWorld();
 
   const crosshairEl = document.getElementById("crosshair");
   const canvas = world.renderer.domElement; // assuming you already have this
@@ -283,6 +301,7 @@ const main = async () => {
 
   // Start with hidden crosshair until we click into the game
   crosshairEl.style.display = "none";
+
   world.go();
 };
 

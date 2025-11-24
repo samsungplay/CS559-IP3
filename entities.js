@@ -1768,14 +1768,7 @@ function debugPrintBoneHierarchy(object3D) {
   console.log("===== End Hierarchy =====");
 }
 
-// Assumes:
-// - THREE imported as T
-// - GrEntity already defined in the same module or imported
-
-// Assumes:
-//   import * as T from "../libs/CS559-Three/build/three.module.js";
-//   GrEntity is defined as you showed.
-
+// this class has been generated with the help of copilot
 export class GrPlayer extends GrEntity {
   constructor(modelPath, voxelWorld, opts = {}) {
     const mergedOpts = {
@@ -3215,7 +3208,42 @@ export class GrPlayer extends GrEntity {
       return;
     }
 
-    this.world.setBlockWorld(x, y, z, this.heldItem);
+    // Torch special-case: directional meta
+    if (this.heldItem === BLOCK.TORCH) {
+      let meta = 0; // default: floor torch
+
+      if (this._aimBlock) {
+        const bx = this._aimBlock.x;
+        const by = this._aimBlock.y;
+        const bz = this._aimBlock.z;
+
+        // support block position relative to torch cell
+        const dx = bx - x;
+        const dy = by - y;
+        const dz = bz - z;
+
+        // On top of a block (torch cell is above support)
+        if (dx === 0 && dz === 0 && dy === -1) {
+          meta = 0; // floor
+        } else if (dy === 0) {
+          // Side-attached
+          if (dx === 1 && dz === 0) {
+            meta = 3; // block east of torch → lean east
+          } else if (dx === -1 && dz === 0) {
+            meta = 4; // block west of torch → lean west
+          } else if (dz === 1 && dx === 0) {
+            meta = 2; // block south of torch → lean south
+          } else if (dz === -1 && dx === 0) {
+            meta = 1; // block north of torch → lean north
+          }
+        }
+      }
+
+      this.world.setBlockWorldWithMeta(x, y, z, this.heldItem, meta);
+    } else {
+      // Normal block placement
+      this.world.setBlockWorld(x, y, z, this.heldItem);
+    }
 
     // Hand animation
     this.triggerHandSwing();

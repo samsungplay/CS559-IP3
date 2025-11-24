@@ -472,6 +472,53 @@ export class VoxelWorld {
     }
   }
 
+  setBlockWorldWithMeta(wx, wy, wz, id, meta) {
+    if (wy < Y_MIN || wy > Y_MAX) return;
+
+    // World → integer
+    wx = Math.floor(wx);
+    wy = Math.floor(wy);
+    wz = Math.floor(wz);
+
+    // World → chunk + local coords
+    const cx = Math.floor(wx / CHUNK_SIZE);
+    const cz = Math.floor(wz / CHUNK_SIZE);
+    const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+
+    const chunk = this.getChunk(cx, cz);
+    if (!chunk) return;
+
+    const oldId = chunk.getBlock(lx, wy, lz);
+    const oldMeta = chunk.getMeta ? chunk.getMeta(lx, wy, lz) : 0;
+
+    if (oldId === id && oldMeta === meta) return; // no change
+
+    chunk.setBlock(lx, wy, lz, id);
+    if (chunk.setMeta) {
+      chunk.setMeta(lx, wy, lz, meta);
+    }
+
+    // ---- Collect all affected chunk coords ----
+    const affected = [[cx, cz]];
+
+    // If we modified a block at local x=0 or x=CHUNK_SIZE-1,
+    // the neighbor chunk on that side also needs to rebuild
+    if (lx === 0) affected.push([cx - 1, cz]);
+    if (lx === CHUNK_SIZE - 1) affected.push([cx + 1, cz]);
+    if (lz === 0) affected.push([cx, cz - 1]);
+    if (lz === CHUNK_SIZE - 1) affected.push([cx, cz + 1]);
+
+    // ---- Rebuild render chunks (if they're loaded) ----
+    for (const [rcx, rcz] of affected) {
+      const key = this.key(rcx, rcz);
+      const renderChunk = this.renderChunks.get(key);
+      if (renderChunk && typeof renderChunk.rebuildGeometry === "function") {
+        renderChunk.rebuildGeometry();
+      }
+    }
+  }
+
   /**
    * Returns the highest solid block Y coordinate at (wx, wz)
    * Useful for entities to walk on the surface.
@@ -519,7 +566,14 @@ export class VoxelWorld {
   }
 
   isPlantId(id) {
-    return id === BLOCK.GRASS || id === BLOCK.DANDELION || id === BLOCK.ROSE;
+    return (
+      id === BLOCK.GRASS ||
+      id === BLOCK.DANDELION ||
+      id === BLOCK.ROSE ||
+      id === BLOCK.RED_MUSHROOM ||
+      id === BLOCK.BROWN_MUSHROOM ||
+      id === BLOCK.TORCH
+    );
   }
 
   /**
@@ -802,6 +856,10 @@ function buildChunkGeometry(chunk, world) {
               depthWrite: false,
               blending: T.AdditiveBlending,
               color: glowColor,
+              side: T.DoubleSide,
+              polygonOffset: true,
+              polygonOffsetFactor: -1,
+              polygonOffsetUnits: -1,
             });
 
             const glowA = new T.Mesh(bd.geometry, glowMat);
@@ -938,6 +996,10 @@ function buildChunkGeometry(chunk, world) {
       transparent: true,
       depthWrite: false,
       blending: T.AdditiveBlending, // this makes it "brighten" the underlying texture
+      side: T.DoubleSide,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
 
     return new T.Mesh(g, mat);
@@ -1051,18 +1113,18 @@ export class GrVoxelChunk extends GrObject {
     }
 
     // ---- 3. Rebuild the new meshes ----
-    const { chunkMesh, crossGroup, waterMesh } = buildChunkGeometry(
-      this._chunk,
-      this._world
-    );
+    const { chunkMesh, crossGroup, waterMesh, emissiveGroup } =
+      buildChunkGeometry(this._chunk, this._world);
     this._chunkMesh = chunkMesh;
     this._crossGroup = crossGroup;
     this._waterMesh = waterMesh;
+    this._emissiveGroup = emissiveGroup;
 
     // ---- 4. Add them back (null-safe) ----
     if (chunkMesh) group.add(chunkMesh);
     if (crossGroup) group.add(crossGroup);
     if (waterMesh) group.add(waterMesh);
+    if (emissiveGroup) group.add(emissiveGroup);
   }
 
   _randomGrassRegrowth() {
