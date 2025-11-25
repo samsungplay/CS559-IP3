@@ -217,10 +217,11 @@ async function generateWorld(world, seed = 205, radius = 5) {
   const player = new GrPlayer(
     "models/minecraft-player/source/MinecraftPlayer/Player.fbx",
     vw,
+    world.scene,
     {
-      x: 0,
+      x: -11,
       y: 80,
-      z: 0,
+      z: 22,
       camera: playerCam, // your THREE.PerspectiveCamera
       domElement: world.renderer.domElement,
       mouseLook: true, // set true if you later add pointer-lock,
@@ -262,7 +263,7 @@ async function regenerateWorld() {
 
   world.blockPicker = new BlockPicker(
     world.renderer,
-    allBlockIds,
+    [null, ...allBlockIds],
     (blockId) => {
       player.setHeldItem(blockId);
     },

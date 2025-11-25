@@ -325,7 +325,7 @@ export class GrWorld {
 
     // Keep track of rendering timings
     this.lastRenderTime = 0;
-    this.lastTimeOfDay = 0;
+    this.lastTimeOfDay = 8;
 
     // Track the "active" object, which we may follow, view solo, etc.
     /**@type GrObject */

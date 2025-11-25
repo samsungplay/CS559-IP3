@@ -285,6 +285,21 @@ export class GrEntity extends GrTickingObject {
       opts.headScanDurationMax !== null
         ? opts.headScanDurationMax
         : 3.0;
+    // --- Health & death ---
+    this.maxHealth =
+      opts.maxHealth !== undefined && opts.maxHealth !== null
+        ? opts.maxHealth
+        : 10;
+    this.health = this.maxHealth;
+    // --- Health bar ---
+    this._healthBar = null;
+
+    this.isDead = false;
+    this.deathTimer = 0;
+    this.deathDuration = 0.8; // seconds for death anim
+
+    this._deathRotStart = 0; // for tipping over
+    this._deathRotEnd = -Math.PI / 2; // lie on side (rotate around X)
 
     // ---------- Debug feet marker ----------
     if (opts.debugScene) {
@@ -335,6 +350,8 @@ export class GrEntity extends GrTickingObject {
       targetPos: null,
     };
 
+    this._hurtMeshes = [];
+
     // ---------- Load FBX ----------
     const loader = new FBXLoader();
     loader.load(
@@ -360,6 +377,16 @@ export class GrEntity extends GrTickingObject {
 
         this._prepareRig(fbx); // subclass hook
         this.visual.add(fbx);
+        this.visual.traverse((obj) => {
+          if (obj.isMesh) {
+            obj.userData.entity = this;
+            this._hurtMeshes.push(obj);
+            if (obj.material && obj.material.color && !obj.userData.baseColor) {
+              obj.userData.baseColor = obj.material.color.clone();
+            }
+          }
+        });
+        this._createHealthBar();
         this.ready = true;
 
         this._pickNewTarget("spawn");
@@ -370,6 +397,236 @@ export class GrEntity extends GrTickingObject {
         console.error("🐾 Entity FBX load failed:", err);
       }
     );
+
+    // --- Combat / Hit Response ---
+    this.knockbackVel = new T.Vector3(0, 0, 0);
+    this.hurtSpeedMultiplier = 1.0;
+    this.hurtTimer = 0;
+    this.hurtBoostFactor = 2.4; // how fast they run when panicked
+    this.hurtDuration = 3; // seconds
+    this.invincibleTimer = 0;
+    this.invincibleDuration = 0.5;
+
+    // --- Fall damage ---
+    this.fallDamageThreshold =
+      opts.fallDamageThreshold !== undefined &&
+      opts.fallDamageThreshold !== null
+        ? opts.fallDamageThreshold
+        : 5; // no damage for first 3 blocks
+    this.fallDamagePerBlock =
+      opts.fallDamagePerBlock !== undefined && opts.fallDamagePerBlock !== null
+        ? opts.fallDamagePerBlock
+        : 1; // 1 HP per extra block
+
+    this._falling = false;
+    this._maxFallY = this.pos.y;
+  }
+
+  _createHealthBar() {
+    const barWidth = 0.7;
+    const barHeight = 0.1;
+
+    const bgGeo = new T.PlaneGeometry(barWidth, barHeight);
+    const fgGeo = new T.PlaneGeometry(barWidth, barHeight);
+
+    const bgMat = new T.MeshBasicMaterial({
+      color: 0x000000,
+      transparent: true,
+      opacity: 0.5,
+      depthTest: false,
+    });
+
+    const fgMat = new T.MeshBasicMaterial({
+      color: 0x00ff00,
+      depthTest: false,
+    });
+
+    const bg = new T.Mesh(bgGeo, bgMat);
+    const fg = new T.Mesh(fgGeo, fgMat);
+    fg.position.z = 0.001; // slightly in front of bg
+
+    const group = new T.Group();
+    group.add(bg);
+    group.add(fg);
+
+    // float above head
+    group.position.y = this.height + 0.6;
+    group.renderOrder = 999;
+
+    this.root.add(group);
+
+    this._healthBar = {
+      group,
+      fg,
+      width: barWidth,
+    };
+  }
+
+  _updateHealthBar() {
+    if (!this._healthBar) return;
+
+    if (this.isDead) {
+      this._healthBar.group.visible = false;
+      return;
+    }
+
+    const ratio = Math.max(0, this.health / this.maxHealth);
+
+    // scale width
+    this._healthBar.fg.scale.x = ratio;
+
+    // shrink from right → left
+    this._healthBar.fg.position.x = -(this._healthBar.width * (1 - ratio)) / 2;
+
+    // color: green → yellow → red
+    let color = 0x00ff00;
+    if (ratio < 0.3) color = 0xff0000;
+    else if (ratio < 0.6) color = 0xffff00;
+    this._healthBar.fg.material.color.set(color);
+
+    // face camera (billboard)
+    const cam = this.world?.renderWorld?.camera;
+    if (cam) {
+      this._healthBar.group.lookAt(cam.position);
+    }
+  }
+
+  _startDeath() {
+    this.isDead = true;
+    if (this._healthBar) {
+      this._healthBar.group.visible = false;
+    }
+    this.deathTimer = this.deathDuration;
+
+    // stop normal AI / movement
+    this.state = "dead";
+    this.dir.set(0, 0, 0);
+    this.jumpCarry.set(0, 0, 0);
+    this.knockbackVel.set(0, 0, 0);
+    this.verticalVel = 0;
+    this._headScan.active = false;
+
+    // ensure no more hurt logic
+    this.hurtTimer = 0;
+    this.invincibleTimer = 0;
+
+    // cache base quaternion so we rotate from clean pose
+    if (!this.visual.userData.baseQuat) {
+      this.visual.userData.baseQuat = this.visual.quaternion.clone();
+    }
+
+    // 90° tilt
+    this._deathRotEnd = Math.PI / 2;
+  }
+
+  _updateDeath(dt) {
+    this.deathTimer -= dt;
+    if (this.deathTimer < 0) this.deathTimer = 0;
+
+    const t =
+      this.deathDuration > 0 ? 1 - this.deathTimer / this.deathDuration : 1;
+
+    // Smoothstep easing (natural fall)
+    const k = t * t * (3 - 2 * t);
+
+    // --- Choose axis in world space, derived from current facing ---
+    const up = new T.Vector3(0, 1, 0); // world up
+
+    // forward in world space based on root orientation
+    const forward = new T.Vector3(0, 0, 1)
+      .applyQuaternion(this.root.quaternion)
+      .normalize();
+
+    // side axis (right) — perpendicular to up and forward
+    const side = new T.Vector3().crossVectors(up, forward).normalize();
+
+    // 🔧 OPTION A: roll around FORWARD → sideways fall (Minecraft-style)
+    // const axis = forward;
+
+    // 🔧 OPTION B: tilt around SIDE → face-plant backward/forward
+    const axis = side; // <-- if this looks wrong, change to `side`
+
+    const q = new T.Quaternion().setFromAxisAngle(axis, this._deathRotEnd * k);
+
+    // restore base pose then apply death rotation
+    this.visual.quaternion.copy(this.visual.userData.baseQuat);
+    this.visual.quaternion.multiply(q);
+
+    // keep corpse red
+    if (this._hurtMeshes && this._hurtMeshes.length) {
+      const hurtColor = new T.Color(0xff0000);
+      for (const m of this._hurtMeshes) {
+        if (!m.material || !m.userData.baseColor) continue;
+        m.material.color.copy(hurtColor);
+        m.material.needsUpdate = true;
+      }
+    }
+
+    // keep transform synced
+    this.root.position.copy(this.pos);
+    this.root.rotation.y = this.yaw;
+
+    // final despawn
+    if (this.deathTimer <= 0 && this.world && this.world.despawnMob) {
+      this.world.despawnMob(this);
+    }
+  }
+
+  onHitByPlayer(player) {
+    // already dead? ignore
+    if (this.isDead) return;
+
+    // short invincibility window
+    if (this.invincibleTimer > 0) {
+      return;
+    }
+
+    // --- DAMAGE ---
+    const damage = 4; // tweak as you like
+    this.health -= damage;
+
+    if (this.health <= 0) {
+      this._startDeath();
+      return;
+    }
+
+    // --- Normal hurt / knockback below ---
+
+    // Direction away from player
+    const dir = this.pos.clone().sub(player.pos);
+    if (dir.lengthSq() < 1e-6) {
+      dir.set(1, 0, 0); // avoid NaN if overlapping
+    }
+    dir.normalize();
+
+    const inLiquid = this._isLiquidAt(
+      this.pos.x,
+      this.pos.y + this.footClear + 0.05,
+      this.pos.z
+    );
+
+    const baseKnockback = 10.5;
+    const waterMultiplier = inLiquid ? 0.35 : 1.0;
+
+    this.knockbackVel.copy(dir).multiplyScalar(baseKnockback * waterMultiplier);
+    this.knockbackVel.y = 7;
+
+    this.invincibleTimer = this.invincibleDuration;
+
+    if (!(this instanceof GrCreeper)) {
+      this.hurtSpeedMultiplier = this.hurtBoostFactor;
+      this.hurtTimer = this.hurtDuration;
+
+      // stop idle head-scan if it was going on
+      this._headScan.active = false;
+
+      // set a clear flee target away from the player
+      const fleeTarget = this.pos.clone().addScaledVector(dir, 10);
+      this.target.copy(fleeTarget);
+
+      // and make sure AI is in walking mode
+      this.state = "walk";
+    }
   }
 
   _updateChunkMembership() {
@@ -531,7 +788,8 @@ export class GrEntity extends GrTickingObject {
     const ix = this._floor(wx),
       iy = this._floor(wy),
       iz = this._floor(wz);
-    return this.world.isLiquidAt(ix, iy, iz);
+
+    return this.world.isWaterAt(ix, iy, iz);
   }
   _findFloorYBelow(x, y, z, maxScan) {
     const fx = this._floor(x),
@@ -645,6 +903,29 @@ export class GrEntity extends GrTickingObject {
   }
 
   _pickNewTarget(reason) {
+    for (let tries = 0; tries < 8; tries++) {
+      const r = 8 + Math.random() * this.wanderRadius;
+      const a = Math.random() * Math.PI * 2;
+      const tx = this.pos.x + Math.cos(a) * r;
+      const tz = this.pos.z + Math.sin(a) * r;
+
+      // Rough floor Y to check lava under the target
+      const floorY = this._findFloorYBelow(tx, this.pos.y + 2, tz, 32);
+      let bad = false;
+      if (isFinite(floorY) && this.world.isLavaAt) {
+        // check the block just below the "floor"
+        if (this.world.isLavaAt(tx, floorY - 1, tz)) {
+          bad = true;
+        }
+      }
+
+      if (!bad) {
+        this.target.set(tx, 0, tz);
+        return;
+      }
+    }
+
+    // fallback: one random target if we somehow failed all
     const r = 8 + Math.random() * this.wanderRadius;
     const a = Math.random() * Math.PI * 2;
     this.target.set(
@@ -706,6 +987,12 @@ export class GrEntity extends GrTickingObject {
     const dt = this._dt(delta);
     this._time += dt;
 
+    // If already dead, just play death animation & despawn
+    if (this.isDead) {
+      this._updateDeath(dt);
+      return;
+    }
+
     // timers
     if (this._jumpTimer > 0)
       this._jumpTimer = Math.max(0, this._jumpTimer - dt);
@@ -719,9 +1006,42 @@ export class GrEntity extends GrTickingObject {
       this.pos.z
     );
 
+    // Check specifically for lava at feet → instant death
+    const inLava =
+      this.world.isLavaAt &&
+      this.world.isLavaAt(
+        this.pos.x,
+        this.pos.y + this.footClear + 0.05,
+        this.pos.z
+      );
+
+    if (inLava) {
+      if (!this.isDead) {
+        this._startDeath();
+      }
+      this._updateDeath(dt);
+      return;
+    }
+
     // Allow head scan while idling
     if (this.state === "idle" && this._headScan.active) {
       this._updateHeadScan(dt);
+    }
+
+    // Track airborne state for fall damage (ignore liquids)
+    const supportedNow =
+      this._hasSupportAt(this.pos.x, this.pos.y, this.pos.z) || inLiquid;
+
+    if (!supportedNow) {
+      if (!this._falling) {
+        this._falling = true;
+        this._maxFallY = this.pos.y;
+      } else if (this.pos.y > this._maxFallY) {
+        this._maxFallY = this.pos.y;
+      }
+    } else if (!this._falling) {
+      // reset on ground
+      this._maxFallY = this.pos.y;
     }
 
     // Vertical accel
@@ -768,13 +1088,40 @@ export class GrEntity extends GrTickingObject {
             this._wasSupported = true;
             this._coyote = this.coyoteSec;
 
+            // --- Fall damage ---
+            if (this._falling) {
+              const fallDist = this._maxFallY - landFeet;
+              if (fallDist > this.fallDamageThreshold) {
+                const extra = fallDist - this.fallDamageThreshold;
+                const dmg = extra * this.fallDamagePerBlock;
+
+                this.health -= dmg;
+                if (dmg > 0) {
+                  this.hurtTimer = this.hurtDuration;
+                  this.invincibleTimer = this.invincibleDuration;
+                }
+                if (this.health <= 0 && !this.isDead) {
+                  this._startDeath();
+                  // we can immediately run death update and bail
+                  this._updateDeath(dt);
+                  return;
+                }
+              }
+              this._falling = false;
+              this._maxFallY = landFeet;
+            }
+
             if (this.state !== "idle") {
-              const movedXZ =
-                Math.hypot(
-                  this.pos.x - this._lastPosXZ.x,
-                  this.pos.z - this._lastPosXZ.y
-                ) / Math.max(dt, 1e-6);
-              this.state = movedXZ > 0.05 ? "walk" : "idle";
+              if (this.hurtTimer > 0 || this.knockbackVel.lengthSq() > 0.001) {
+                this.state = "walk";
+              } else {
+                const movedXZ =
+                  Math.hypot(
+                    this.pos.x - this._lastPosXZ.x,
+                    this.pos.z - this._lastPosXZ.y
+                  ) / Math.max(dt, 1e-6);
+                this.state = movedXZ > 0.05 ? "walk" : "idle";
+              }
             }
           }
         }
@@ -810,6 +1157,40 @@ export class GrEntity extends GrTickingObject {
 
     // Horizontal speed
     let speed = inLiquid ? this.swimSpeed : this.walkSpeed;
+
+    // Panic speed boost
+    if (this.hurtTimer > 0) {
+      speed *= this.hurtSpeedMultiplier;
+      this.hurtTimer -= dt;
+    } else {
+      this.hurtSpeedMultiplier = 1.0;
+    }
+
+    if (this.invincibleTimer > 0) {
+      this.invincibleTimer = Math.max(0, this.invincibleTimer - dt);
+    }
+
+    // --- Hurt flash (material tint) ---
+    if (this._hurtMeshes && this._hurtMeshes.length) {
+      if (this.invincibleTimer > 0) {
+        const hurtColor = new T.Color(0xff0000);
+
+        for (const m of this._hurtMeshes) {
+          if (!m.material || !m.userData.baseColor) continue;
+          // lerp between original color and red
+          m.material.color = hurtColor;
+          m.material.needsUpdate = true;
+        }
+      } else {
+        // restore original color once no longer hurt
+        for (const m of this._hurtMeshes) {
+          if (!m.material || !m.userData.baseColor) continue;
+          m.material.color.copy(m.userData.baseColor);
+          m.material.needsUpdate = true;
+        }
+      }
+    }
+
     if (this.state === "fall" || this.state === "jump")
       speed *= this.airControl;
     if (this.state === "idle") speed = 0;
@@ -826,6 +1207,27 @@ export class GrEntity extends GrTickingObject {
       nz += this.dir.z * step;
     }
 
+    // --- Avoid walking into lava (but allow external forces like knockback) ---
+    if (step > 0 && this.world.isLavaAt) {
+      const feetY = this.pos.y + this.footClear + 0.05;
+
+      // Check end of step and midpoint of step
+      const midX = (this.pos.x + nx) * 0.5;
+      const midZ = (this.pos.z + nz) * 0.5;
+
+      const lavaEnd = this.world.isLavaAt(nx, feetY, nz);
+      const lavaMid = this.world.isLavaAt(midX, feetY, midZ);
+
+      if (lavaEnd || lavaMid) {
+        // cancel this walking step and retarget, similar to cliff avoidance
+        nx = this.pos.x;
+        nz = this.pos.z;
+
+        this._pickNewTarget("lava-ahead");
+        this._maybeEnterIdleByChance("lava-ahead");
+      }
+    }
+
     const groundedNow = this._hasSupportAt(this.pos.x, this.pos.y, this.pos.z);
     if (groundedNow) {
       this._coyote = this.coyoteSec;
@@ -840,6 +1242,26 @@ export class GrEntity extends GrTickingObject {
       nz += this.jumpCarry.z * this.jumpAirSpeedMul * dt;
       const decay = Math.exp(-this.jumpCarryDecay * dt);
       this.jumpCarry.multiplyScalar(decay);
+    }
+
+    // --- APPLY KNOCKBACK TO PROPOSED POSITION ---
+    if (this.knockbackVel.lengthSq() > 0.001) {
+      // Add knockback into proposed movement
+      nx += this.knockbackVel.x * dt;
+      nz += this.knockbackVel.z * dt;
+
+      // Optional: use Y for a hop
+      if (this.knockbackVel.y > 0) {
+        this.verticalVel = Math.max(this.verticalVel, this.knockbackVel.y);
+        this.knockbackVel.y = 0;
+      }
+
+      const friction = inLiquid ? 0.55 : 0.82; // more damping in water
+      this.knockbackVel.multiplyScalar(friction);
+
+      if (this.knockbackVel.lengthSq() < 0.01) {
+        this.knockbackVel.set(0, 0, 0);
+      }
     }
 
     // Ledge step-off detection
@@ -995,8 +1417,14 @@ export class GrEntity extends GrTickingObject {
     this.root.position.copy(this.pos);
     this.root.rotation.y = this.yaw;
 
-    // Animate (subclass hook)
-    this._animateLegs(dt, horizSpeed, inLiquid);
+    this._updateHealthBar();
+
+    let animSpeed = horizSpeed;
+    if (this.hurtTimer > 0) {
+      animSpeed *= this.hurtBoostFactor; // or e.g. * 1.3 if you want milder
+    }
+
+    this._animateLegs(dt, animSpeed, inLiquid);
 
     // Bookkeeping
     this._lastPosXZ.set(this.pos.x, this.pos.z);
@@ -1770,7 +2198,7 @@ function debugPrintBoneHierarchy(object3D) {
 
 // this class has been generated with the help of copilot
 export class GrPlayer extends GrEntity {
-  constructor(modelPath, voxelWorld, opts = {}) {
+  constructor(modelPath, voxelWorld, scene, opts = {}) {
     const mergedOpts = {
       // Player-sized capsule
       height: 1.7,
@@ -1801,6 +2229,7 @@ export class GrPlayer extends GrEntity {
     super("Player", modelPath, voxelWorld, mergedOpts);
     this.waterTintEl = opts.waterTintEl;
     this.armAxis = mergedOpts.armAxis ?? mergedOpts.legAxis ?? "z";
+    this.scene = scene;
 
     // ---------- View / camera ----------
     this.camera = opts.camera || null;
@@ -1898,6 +2327,14 @@ export class GrPlayer extends GrEntity {
       if (e.code === "F5" || e.code === "KeyV") {
         this._toggleViewMode();
       }
+
+      if (e.code === "KeyK") {
+        this.world.spawnMobAt("pig", this.pos.x, this.pos.y + 4, this.pos.z);
+      }
+
+      if (e.code === "KeyC") {
+        this.setHeldItem(null);
+      }
     };
 
     this._onKeyUp = (e) => {
@@ -1914,8 +2351,8 @@ export class GrPlayer extends GrEntity {
 
       // 0 = left, 2 = right
       if (e.button === 0) {
-        // Break block
-        this._tryBreakBlock();
+        this.triggerHandSwing();
+        this._handlePrimaryInteraction();
       } else if (e.button === 2) {
         e.preventDefault();
         // Place block
@@ -2484,15 +2921,32 @@ export class GrPlayer extends GrEntity {
       this.pos.z
     );
 
-    const eyeY = this.pos.y + this.height * 0.9; // or this.pos.y + this.height * 0.9
+    const eyeY = this.pos.y + this.height * 0.9;
 
-    const isUnderWater = this._isLiquidAt(
-      this.pos.x,
-      eyeY + 0.05, // tiny offset so it's clearly inside the block
-      this.pos.z
-    );
+    // Check which liquid is at the eye level
+    const ex = Math.floor(this.pos.x);
+    const ey = Math.floor(eyeY + 0.05);
+    const ez = Math.floor(this.pos.z);
+
+    let eyeInWater = false;
+    let eyeInLava = false;
+
+    if (this.world.isWaterAt) eyeInWater = this.world.isWaterAt(ex, ey, ez);
+    if (this.world.isLavaAt) eyeInLava = this.world.isLavaAt(ex, ey, ez);
+
     if (this.waterTintEl) {
-      this.waterTintEl.style.opacity = isUnderWater ? "1" : "0";
+      if (eyeInWater || eyeInLava) {
+        this.waterTintEl.style.opacity = "1";
+
+        // You can tweak these colors to match your CSS
+        if (eyeInLava) {
+          this.waterTintEl.style.backgroundColor = "rgba(255, 120, 0, 0.45)"; // orange
+        } else {
+          this.waterTintEl.style.backgroundColor = "rgba(0, 80, 255, 0.35)"; // blue
+        }
+      } else {
+        this.waterTintEl.style.opacity = "0";
+      }
     }
 
     const jumpHeld = this._key("Space");
@@ -3006,6 +3460,7 @@ export class GrPlayer extends GrEntity {
     this.root.position.copy(this.pos);
     this.root.rotation.y = this.yaw;
     this._updateHandSwing(dt);
+
     this._animateLegs(dt, horizSpeed, inLiquid);
 
     this._lastPosXZ.set(this.pos.x, this.pos.z);
@@ -3249,20 +3704,71 @@ export class GrPlayer extends GrEntity {
     this.triggerHandSwing();
   }
 
-  _tryBreakBlock() {
-    if (!this.world) return;
+  _handlePrimaryInteraction() {
+    if (!this.camera || !this.scene) return;
+
+    const REACH = this.reachDistance; // how far from the PLAYER we can hit entities/blocks
+
+    // Ray origin & dir from camera center
+    const origin = this.camera.position.clone();
+    const dir = new T.Vector3();
+    this.camera.getWorldDirection(dir).normalize();
+
+    // Let ray go "past" the player in third-person
+    const camToPlayer = origin.distanceTo(this.pos);
+    const maxDist = REACH + camToPlayer + 0.5;
+
+    const raycaster = new T.Raycaster(origin, dir, 0, maxDist);
+    const intersects = raycaster.intersectObjects(this.scene.children, true);
+
+    // 1️⃣ Try to hit an entity first
+    for (const hit of intersects) {
+      const obj = hit.object;
+      const entity = obj.userData.entity;
+
+      // distance from PLAYER to hit point (not camera)
+      const distFromPlayer = hit.point.distanceTo(this.pos);
+      if (distFromPlayer > REACH) continue;
+
+      if (entity instanceof GrEntity && entity !== this) {
+        // console.log("Hit entity", entity);
+        entity.onHitByPlayer(this);
+        return;
+      }
+    }
+
+    // 2️⃣ No entity? fall back to block breaking via existing aim system
     if (!this._aimBlock) return;
 
-    const x = this._aimBlock.x;
-    const y = this._aimBlock.y;
-    const z = this._aimBlock.z;
-
+    const { x, y, z } = this._aimBlock;
     const id = this.world.getBlockWorld(x, y, z);
     if (id === BLOCK.AIR) return;
 
     this.world.setBlockWorld(x, y, z, BLOCK.AIR);
+  }
 
-    // Hand animation too
-    this.triggerHandSwing();
+  // --- Player-specific liquid check: water OR lava are swimmable ---
+  _isLiquidAt(wx, wy, wz) {
+    const ix = Math.floor(wx);
+    const iy = Math.floor(wy);
+    const iz = Math.floor(wz);
+
+    // If world exposes helpers, use them:
+    if (this.world.isWaterAt || this.world.isLavaAt) {
+      let inWater = false;
+      let inLava = false;
+
+      if (this.world.isWaterAt) inWater = this.world.isWaterAt(ix, iy, iz);
+      if (this.world.isLavaAt) inLava = this.world.isLavaAt(ix, iy, iz);
+
+      return inWater || inLava;
+    }
+
+    // Fallback to generic liquid check if helpers don't exist
+    if (this.world.isLiquidAt) {
+      return this.world.isLiquidAt(ix, iy, iz);
+    }
+
+    return false;
   }
 }

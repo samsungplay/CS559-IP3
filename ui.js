@@ -372,6 +372,43 @@ export class BlockPicker {
     this.iconGroup.clear();
 
     for (const blockId of this.blockIds) {
+      // ✅ FAKE AIR SLOT
+      if (blockId === null) {
+        const group = new T.Group();
+
+        // background cell
+        const cellMat = new T.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.18,
+          toneMapped: false,
+        });
+        const cell = new T.Mesh(this._cellGeom, cellMat);
+        group.add(cell);
+
+        // simple visual: slashed circle (empty icon)
+        const geo = new T.RingGeometry(0.25, 0.35, 24);
+        const mat = new T.MeshBasicMaterial({ color: 0xff4444 });
+        const ring = new T.Mesh(geo, mat);
+
+        const slashGeo = new T.PlaneGeometry(0.5, 0.06);
+        const slashMat = new T.MeshBasicMaterial({ color: 0xff4444 });
+        const slash = new T.Mesh(slashGeo, slashMat);
+        slash.rotation.z = Math.PI / 4;
+
+        const icon = new T.Group();
+        icon.add(ring, slash);
+
+        group.add(icon);
+
+        const item = { blockId: null, group, cell, icon };
+        cell.userData.pickerItem = item;
+        icon.userData.pickerItem = item;
+
+        this.iconGroup.add(group);
+        this.items.push(item);
+        continue;
+      }
       const bd = getBlockData(blockId);
       if (!bd) continue;
 

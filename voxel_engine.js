@@ -127,6 +127,19 @@ export class VoxelWorld {
     this._mobSpawnInterval = 2 * Math.random() * 3;
   }
 
+  isWaterId(id) {
+    return id === BLOCK.WATER;
+  }
+
+  isLavaId(id) {
+    return id === BLOCK.LAVA;
+  }
+
+  isLavaAt(wx, wy, wz) {
+    const id = this.getBlockWorld(wx, wy, wz);
+    return this.isLavaId(id);
+  }
+
   // Register mob globally and in its render chunk's entities list
   _registerMob(mob, wx, wz) {
     // this.mobs.push(mob);
@@ -140,6 +153,31 @@ export class VoxelWorld {
     //   }
     //   renderChunk.entities.push(mob);
     // }
+  }
+
+  despawnMob(mob) {
+    // 1) Remove from global mob list
+    const i = this.mobs.indexOf(mob);
+    if (i !== -1) {
+      this.mobs.splice(i, 1);
+    }
+
+    // 2) Remove from the chunk's entities list if present
+    const chunk = mob._currentChunk;
+    if (chunk && Array.isArray(chunk.entities)) {
+      const idx = chunk.entities.indexOf(mob);
+      if (idx !== -1) {
+        chunk.entities.splice(idx, 1);
+      }
+    }
+
+    // 3) Remove from render world / scene graph
+    if (this.renderWorld && typeof this.renderWorld.remove === "function") {
+      this.renderWorld.remove(mob);
+    } else if (this.renderWorld && this.renderWorld.scene) {
+      // fallback if your GrWorld exposes scene explicitly
+      this.renderWorld.scene.remove(mob.objects ? mob.objects[0] : mob);
+    }
   }
 
   // Pick a random chunk that exists (for even spatial distribution)
@@ -561,8 +599,24 @@ export class VoxelWorld {
     return this.isLiquidId(id);
   }
 
+  isLavaAt(wx, wy, wz) {
+    wx = Math.floor(wx);
+    wy = Math.floor(wy);
+    wz = Math.floor(wz);
+    const id = this.getBlockWorld(wx, wy, wz);
+    return id === BLOCK.LAVA;
+  }
+
+  isWaterAt(wx, wy, wz) {
+    wx = Math.floor(wx);
+    wy = Math.floor(wy);
+    wz = Math.floor(wz);
+    const id = this.getBlockWorld(wx, wy, wz);
+    return id === BLOCK.WATER;
+  }
+
   isLiquidId(id) {
-    return id === BLOCK.WATER || id === BLOCK.LAVA;
+    return this.isWaterId(id) || this.isLavaId(id);
   }
 
   isPlantId(id) {
