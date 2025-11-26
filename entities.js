@@ -420,6 +420,8 @@ export class GrEntity extends GrTickingObject {
 
     this._falling = false;
     this._maxFallY = this.pos.y;
+
+    this._freezeSelfMovement = false;
   }
 
   _createHealthBar() {
@@ -1157,6 +1159,10 @@ export class GrEntity extends GrTickingObject {
 
     // Horizontal speed
     let speed = inLiquid ? this.swimSpeed : this.walkSpeed;
+
+    if (this._freezeSelfMovement) {
+      speed = 0; // ✅ stops navigation movement only
+    }
 
     // Panic speed boost
     if (this.hurtTimer > 0) {
@@ -2002,31 +2008,61 @@ export class GrCreeper extends GrEntity {
   constructor(modelPath, voxelWorld, opts = {}) {
     super(`GrCreeper${creeperCounter++}`, modelPath, voxelWorld, {
       // Creeper-ish movement defaults
-      walkSpeed: 1.2, // a bit plodding
+      walkSpeed: 1.8,
       swimSpeed: 0.8,
       wanderRadius: 12,
-      idleChance: 0.4, // sometimes stops & head-scans
-      // Hitbox (very important!)
-      halfWidth: 0.28, // creeper is thin
-      height: 1.65, // creeper is tall
-      chest: 1.45, // chest height matches halfway up the body
-      footClear: 0.02, // creeper feet are nearly flat
-      // Slightly tighter bobbing than pig / sheep
+      idleChance: 0.4,
+      // Hitbox
+      halfWidth: 0.28,
+      height: 1.65,
+      chest: 1.45,
+      footClear: 0.02,
+      // Bobbing
       bobAmp: 0.18,
-
-      // Adjust if scale looks wrong
+      // Model
       modelScale: 0.003,
       headScanAxis: "y",
-
-      // Let caller override anything
       ...opts,
     });
+
+    // ⭐ Simple chase + explode tuning
+    this.chaseRange = opts.chaseRange ?? 20;
+    this.explodeRange = opts.explodeRange ?? 2.5;
+    this.explodeFuseTime = opts.explodeFuseTime ?? 1.5;
+    this.explodeDamageRadius = opts.explodeDamageRadius ?? 3.5;
+    this.explodeKnockback = opts.explodeKnockback ?? 12;
+    this.explodeKnockUp = opts.explodeKnockUp ?? 10;
+
+    this._exploding = false;
+    this._fuseTimer = 0;
+    this._flashPhase = 0;
+    this._skinMeshes = [];
+    this._chasingPlayer = false;
   }
 
   // ---------- Rig: creeper-specific bones ----------
   _prepareRig(root) {
     const boneMap = new Map();
-    root.traverse(function (o) {
+
+    root.traverse((o) => {
+      // ⭐ Collect skinned meshes so we can flash them later
+      if (o.isSkinnedMesh || o.isMesh) {
+        this._skinMeshes.push(o);
+
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for (const mat of mats) {
+          if (!mat) continue;
+          if (!mat.userData) mat.userData = {};
+
+          if (mat.color && !mat.userData.baseColor) {
+            mat.userData.baseColor = mat.color.clone();
+          }
+          if (mat.emissive && !mat.userData.baseEmissive) {
+            mat.userData.baseEmissive = mat.emissive.clone();
+          }
+        }
+      }
+
       if (o.isSkinnedMesh && o.skeleton) {
         for (let i = 0; i < o.skeleton.bones.length; i++) {
           const b = o.skeleton.bones[i];
@@ -2038,8 +2074,6 @@ export class GrCreeper extends GrEntity {
       }
     });
 
-    // From your hierarchy:
-    //   FLLeg, FRLeg, BLLeg, BRLeg, Head, Spine
     const FL = boneMap.get("FLLeg") || root.getObjectByName("FLLeg") || null;
     const FR = boneMap.get("FRLeg") || root.getObjectByName("FRLeg") || null;
     const BL = boneMap.get("BLLeg") || root.getObjectByName("BLLeg") || null;
@@ -2052,7 +2086,6 @@ export class GrCreeper extends GrEntity {
     this._rig.head = Head;
     this._rig.spine = Spine;
 
-    // Store base orientations (and optional base position for head)
     for (let i = 0; i < this._rig.legBones.length; i++) {
       const b = this._rig.legBones[i];
       b.userData.baseQuat = b.quaternion.clone();
@@ -2071,13 +2104,11 @@ export class GrCreeper extends GrEntity {
     const legs = this._rig.legBones;
     if (!legs || legs.length === 0) return;
 
-    // --- Leg swing (short, stiff, creeper-y) ---
     const speedNorm = Math.min(
       Math.max(horizSpeed / Math.max(this.walkSpeed, 1e-6), 0),
       1
     );
 
-    // Creepers have a small stride
     const baseAmp = inLiquid ? 0.08 : 0.16;
     const amp =
       speedNorm < 0.05
@@ -2110,7 +2141,6 @@ export class GrCreeper extends GrEntity {
       BL = this._rig.legs.BL,
       BR = this._rig.legs.BR;
 
-    // Diagonal gait: FL+BR together, FR+BL together
     const s0 = Math.sin(phase) * amp;
     const s1 = Math.sin(phase + Math.PI) * amp;
     applySwing(FL, s0);
@@ -2118,7 +2148,6 @@ export class GrCreeper extends GrEntity {
     applySwing(FR, s1);
     applySwing(BL, s1);
 
-    // ---------- Head & spine animation ----------
     const head = this._rig.head;
     const spine = this._rig.spine;
     if (!head || !head.userData || !head.userData.baseQuat) return;
@@ -2126,17 +2155,15 @@ export class GrCreeper extends GrEntity {
     const baseHeadQuat = head.userData.baseQuat;
     const scanning = this._headScan && this._headScan.active ? true : false;
 
-    // 1) WALK: very subtle head bob when moving and NOT scanning
     if (!inLiquid && !scanning && (this.state === "walk" || speedNorm > 0.1)) {
-      const bobAxis = new T.Vector3(1, 0, 0); // nodding
+      const bobAxis = new T.Vector3(1, 0, 0);
       const bob = 0.02 * speedNorm * Math.sin(phase * 0.6);
       const qBob = new T.Quaternion().setFromAxisAngle(bobAxis, bob);
       head.quaternion.copy(baseHeadQuat).multiply(qBob);
 
-      // tiny spine sway to keep it from looking dead stiff
       if (spine && spine.userData && spine.userData.baseQuat) {
         const baseSpineQuat = spine.userData.baseQuat;
-        const swayAxis = new T.Vector3(0, 1, 0); // tiny yaw
+        const swayAxis = new T.Vector3(0, 1, 0);
         const sway = 0.01 * Math.sin(phase * 0.5);
         const qSway = new T.Quaternion().setFromAxisAngle(swayAxis, sway);
         spine.quaternion.copy(baseSpineQuat).multiply(qSway);
@@ -2144,7 +2171,6 @@ export class GrCreeper extends GrEntity {
       return;
     }
 
-    // 2) IDLE (no scanning): gently relax toward base pose
     if (!scanning) {
       const relaxLerp = 1 - Math.exp(-5 * dt);
       head.quaternion.slerp(baseHeadQuat, relaxLerp);
@@ -2155,9 +2181,211 @@ export class GrCreeper extends GrEntity {
       }
       return;
     }
+  }
 
-    // 3) If scanning is active, DO NOT touch head/spine here.
-    // Base GrEntity's head-scan logic owns the head orientation in that case.
+  // ============================================================
+  // ⭐ AI + Explosion logic
+  // ============================================================
+
+  _getPlayer() {
+    return this.world.player;
+  }
+
+  // ⭐ Override idle-by-chance: NEVER idle while chasing
+  _maybeEnterIdleByChance(reason) {
+    if (this._chasingPlayer) {
+      // Stay in walk while aggro
+      this.state = "walk";
+      this._headScan.active = false;
+      return false;
+    }
+    // Normal behavior when not chasing
+    return super._maybeEnterIdleByChance(reason);
+  }
+
+  // ⭐ Override target picking: chase player if in chase mode
+  _pickNewTarget(reason) {
+    const player = this._getPlayer();
+
+    if (this._chasingPlayer && player) {
+      this.target.set(player.pos.x, this.pos.y, player.pos.z);
+      return;
+    }
+
+    super._pickNewTarget(reason);
+  }
+
+  // ⭐ Called after base physics each tick
+  stepTick(delta) {
+    super.stepTick(delta);
+
+    const dt = Math.min(delta * 0.001, 0.05);
+    this._updateChaseAndExplosion(dt);
+  }
+
+  _updateChaseAndExplosion(dt) {
+    const player = this._getPlayer();
+    if (!player || this.dead) {
+      this._chasingPlayer = false;
+      this._resetFuseAndFlash();
+      return;
+    }
+
+    const dx = player.pos.x - this.pos.x;
+    const dy = player.pos.y - this.pos.y;
+    const dz = player.pos.z - this.pos.z;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+    // ---------- CHASE LOGIC ----------
+    if (!this._exploding) {
+      if (dist <= this.chaseRange) {
+        this._chasingPlayer = true;
+        const chaseY = this.pos.y;
+        this.target.set(player.pos.x, chaseY, player.pos.z);
+
+        // ⭐ If we were idle/head-scanning, snap back into walk right away
+        if (this.state === "idle") {
+          this.state = "walk";
+          this._headScan.active = false;
+          this._idleTimer = 0;
+        }
+      } else {
+        this._chasingPlayer = false;
+      }
+
+      // Start fuse when close enough
+      if (dist <= this.explodeRange) {
+        this._exploding = true;
+        this._fuseTimer = this.explodeFuseTime;
+        this._flashPhase = 0;
+
+        this._chasingPlayer = false;
+        // 🚫 STOP SELF MOVEMENT
+        this._freezeSelfMovement = true;
+        this.state = "idle";
+        this.dir.set(0, 0, 0);
+        this.target.copy(this.pos);
+      }
+
+      return;
+    }
+
+    // ---------- FUSE ALREADY ACTIVE ----------
+    if (dist > this.explodeRange + 4.0 || this.isDead) {
+      this._chasingPlayer = false;
+      this._resetFuseAndFlash();
+      return;
+    }
+
+    this._fuseTimer -= dt;
+    this._updateFlash(dt);
+
+    if (this._fuseTimer <= 0) {
+      this._doExplosion(player);
+    }
+  }
+
+  _updateFlash(dt) {
+    this._flashPhase += dt * 10;
+    const on = Math.floor(this._flashPhase) % 2 === 0;
+    this._setFlashState(on);
+  }
+
+  _setFlashState(on) {
+    for (const mesh of this._skinMeshes) {
+      const mats = Array.isArray(mesh.material)
+        ? mesh.material
+        : [mesh.material];
+      for (const mat of mats) {
+        if (!mat) continue;
+        const baseColor = mat.userData?.baseColor;
+        const baseEmissive = mat.userData?.baseEmissive;
+
+        if (on) {
+          if (mat.emissive) {
+            mat.emissive.setHex(0xffffff);
+          } else if (mat.color) {
+            mat.color.setHex(0xffffff);
+          }
+        } else {
+          if (mat.emissive && baseEmissive) {
+            mat.emissive.copy(baseEmissive);
+          }
+          if (mat.color && baseColor) {
+            mat.color.copy(baseColor);
+          }
+        }
+      }
+    }
+  }
+
+  _resetFuseAndFlash() {
+    this._exploding = false;
+    this._fuseTimer = 0;
+    this._flashPhase = 0;
+    this._setFlashState(false);
+    this._freezeSelfMovement = false;
+  }
+
+  _doExplosion(player) {
+    const cx = Math.floor(this.pos.x);
+    const cy = Math.floor(this.pos.y);
+    const cz = Math.floor(this.pos.z);
+    const r = this.explodeDamageRadius;
+
+    if (this.world && this.world.getBlockWorld && this.world.setBlockWorld) {
+      this.world.beginBatch();
+      const rCeil = Math.ceil(r);
+      for (let x = cx - rCeil; x <= cx + rCeil; x++) {
+        for (let y = cy - rCeil; y <= cy + rCeil; y++) {
+          for (let z = cz - rCeil; z <= cz + rCeil; z++) {
+            const dx = x + 0.5 - this.pos.x;
+            const dy = y + 0.5 - this.pos.y;
+            const dz = z + 0.5 - this.pos.z;
+            const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist > r + 0.5) continue;
+
+            const id = this.world.getBlockWorld(x, y, z);
+            if (id !== BLOCK.AIR) {
+              this.world.setBlockWorld(x, y, z, BLOCK.AIR);
+            }
+          }
+        }
+      }
+      this.world.endBatch();
+    }
+
+    if (player && player.pos) {
+      const push = new T.Vector3(
+        player.pos.x - this.pos.x,
+        0,
+        player.pos.z - this.pos.z
+      );
+      const len = push.length();
+      if (len > 1e-3) {
+        push.divideScalar(len);
+
+        if (player.jumpCarry) {
+          player.jumpCarry.add(
+            push.clone().multiplyScalar(this.explodeKnockback)
+          );
+        } else if (player.dir) {
+          player.dir.add(push.clone().multiplyScalar(0.8));
+        }
+
+        if (typeof player.verticalVel === "number") {
+          player.verticalVel = Math.max(
+            player.verticalVel,
+            this.explodeKnockUp
+          );
+        }
+      }
+    }
+
+    this._resetFuseAndFlash();
+    if (this.root) this.root.visible = false;
+
+    this.world.despawnMob(this);
   }
 }
 
@@ -2329,7 +2557,12 @@ export class GrPlayer extends GrEntity {
       }
 
       if (e.code === "KeyK") {
-        this.world.spawnMobAt("pig", this.pos.x, this.pos.y + 4, this.pos.z);
+        this.world.spawnMobAt(
+          "creeper",
+          this.pos.x + 6,
+          this.pos.y + 4,
+          this.pos.z
+        );
       }
 
       if (e.code === "KeyC") {
@@ -3707,44 +3940,48 @@ export class GrPlayer extends GrEntity {
   _handlePrimaryInteraction() {
     if (!this.camera || !this.scene) return;
 
-    const REACH = this.reachDistance; // how far from the PLAYER we can hit entities/blocks
+    const REACH = this.reachDistance;
 
-    // Ray origin & dir from camera center
     const origin = this.camera.position.clone();
     const dir = new T.Vector3();
     this.camera.getWorldDirection(dir).normalize();
 
-    // Let ray go "past" the player in third-person
     const camToPlayer = origin.distanceTo(this.pos);
     const maxDist = REACH + camToPlayer + 0.5;
 
     const raycaster = new T.Raycaster(origin, dir, 0, maxDist);
     const intersects = raycaster.intersectObjects(this.scene.children, true);
 
-    // 1️⃣ Try to hit an entity first
+    if (!intersects.length) return;
+
+    // ✅ We now take the FIRST valid hit within reach
     for (const hit of intersects) {
+      const hitPoint = hit.point;
+      const distFromPlayer = hitPoint.distanceTo(this.pos);
+
+      if (distFromPlayer > REACH) continue;
+
       const obj = hit.object;
       const entity = obj.userData.entity;
 
-      // distance from PLAYER to hit point (not camera)
-      const distFromPlayer = hit.point.distanceTo(this.pos);
-      if (distFromPlayer > REACH) continue;
-
+      // 1️⃣ If first visible hit is an entity → attack
       if (entity instanceof GrEntity && entity !== this) {
-        // console.log("Hit entity", entity);
         entity.onHitByPlayer(this);
         return;
       }
+
+      // 2️⃣ Otherwise it's a block → break block and STOP
+      const blockPos = this._aimBlock;
+
+      if (!blockPos) return;
+
+      const { x, y, z } = blockPos;
+      const id = this.world.getBlockWorld(x, y, z);
+      if (id !== BLOCK.AIR) {
+        this.world.setBlockWorld(x, y, z, BLOCK.AIR);
+        return;
+      }
     }
-
-    // 2️⃣ No entity? fall back to block breaking via existing aim system
-    if (!this._aimBlock) return;
-
-    const { x, y, z } = this._aimBlock;
-    const id = this.world.getBlockWorld(x, y, z);
-    if (id === BLOCK.AIR) return;
-
-    this.world.setBlockWorld(x, y, z, BLOCK.AIR);
   }
 
   // --- Player-specific liquid check: water OR lava are swimmable ---

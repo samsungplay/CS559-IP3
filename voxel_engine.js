@@ -462,12 +462,30 @@ export class VoxelWorld {
     return chunk.getBlock(lx, wy, lz);
   }
 
+  beginBatch() {
+    this._batchChunks = new Set();
+  }
+
+  endBatch() {
+    if (!this._batchChunks) return;
+
+    for (const key of this._batchChunks) {
+      const renderChunk = this.renderChunks.get(key);
+      if (renderChunk && typeof renderChunk.rebuildGeometry === "function") {
+        renderChunk.rebuildGeometry();
+      }
+    }
+
+    this._batchChunks.clear();
+    this._batchChunks = null;
+  }
+
   /**
    * World-space setter with cross-chunk support.
    * - Does nothing if target chunk does not exist.
    * - Calls rebuildGeometry() on the corresponding GrVoxelChunk, if registered.
    */
-  setBlockWorld(wx, wy, wz, id) {
+  setBlockWorld(wx, wy, wz, id, doUpdate = true) {
     if (wy < Y_MIN || wy > Y_MAX) return;
 
     // World → integer
@@ -500,12 +518,19 @@ export class VoxelWorld {
     if (lz === 0) affected.push([cx, cz - 1]);
     if (lz === CHUNK_SIZE - 1) affected.push([cx, cz + 1]);
 
-    // ---- Rebuild render chunks (if they're loaded) ----
+    // ---- Instead of rebuilding immediately ----
     for (const [rcx, rcz] of affected) {
       const key = this.key(rcx, rcz);
-      const renderChunk = this.renderChunks.get(key);
-      if (renderChunk && typeof renderChunk.rebuildGeometry === "function") {
-        renderChunk.rebuildGeometry();
+
+      if (this._batchChunks) {
+        // batching mode → record only
+        this._batchChunks.add(key);
+      } else {
+        // normal mode → immediate rebuild
+        const renderChunk = this.renderChunks.get(key);
+        if (renderChunk && typeof renderChunk.rebuildGeometry === "function") {
+          renderChunk.rebuildGeometry();
+        }
       }
     }
   }

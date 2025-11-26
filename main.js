@@ -273,6 +273,7 @@ async function regenerateWorld() {
       rowsVisible: 5,
     }
   );
+  voxelWorldInstance.player = player;
 }
 
 ///////////////////////////////////////////////////////////////
