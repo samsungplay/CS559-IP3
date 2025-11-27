@@ -19,7 +19,7 @@ void main() {
   // Wave parameters
   float k1 = 0.08;      // spatial frequency X
   float k2 = 0.05;      // spatial frequency Z
-  float amp = 0.5;      // amplitude (height of waves)
+  float amp = 0.0;      // amplitude (height of waves)
   float s1 = 0.8;       // speed 1
   float s2 = 0.6;       // speed 2
 

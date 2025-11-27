@@ -3703,6 +3703,11 @@ export class GrPlayer extends GrEntity {
 
     this._updateChunkMembership();
 
+    // ✅ NEW: remember the last *valid* position every frame
+    if (this._capsuleFreeAtPlayer(this.pos.x, this.pos.y, this.pos.z)) {
+      this._lastSafePos.copy(this.pos);
+    }
+
     // ---- SMART UN-STUCK (edge-aware) ----
     if (!this._capsuleFreeAtPlayer(this.pos.x, this.pos.y, this.pos.z)) {
       let fixed = false;

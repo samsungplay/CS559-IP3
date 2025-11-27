@@ -111,10 +111,137 @@ export class VoxelWorld {
     this._mobSpawnTimer = 0; // time until next spawn attempt
     this._resetMobSpawnInterval(); // randomize initial interval
 
+    // --- Rain ---
     this.isRaining = false;
     this.rainSystem.setVisible(false);
     this._rainTimer = 0;
     this._rainNextToggle = this._randomRainInterval();
+
+    // --- Fluid simulation state ---
+    this._fluidQueue = []; // ring-buffer queue of cells
+    this._fluidHead = 0; // index of first valid element
+    this._fluidSeen = new Set(); // per-wave dedup
+
+    // Tunables: how far each fluid can spread horizontally
+    this._waterMaxLevel = 4; // roughly like Minecraft
+    this._lavaMaxLevel = 3;
+
+    // Allow waterfalls to fall deeper than horizontal radius
+    this._waterFallDepth = 64;
+    this._lavaFallDepth = 16;
+
+    // Fluid tick pacing
+    this._fluidStepInterval = 0.15; // seconds between fluid waves
+    this._fluidAccum = 0;
+
+    // 🔗 NEW: explicit parent/child graph for retraction
+    this._fluidParents = new Map(); // key -> parentKey | null
+    this._fluidChildren = new Map(); // key -> Set(childKey)
+
+    // 🌀 pending gradual retraction
+    this._retractPending = new Set(); // set of fluid node keys to retract gradually
+  }
+
+  // Blocks that fluids are allowed to overwrite
+  isReplaceableByFluid(id) {
+    // air always replaceable
+    if (id === BLOCK.AIR) return true;
+
+    // non-solid “cross” blocks like flowers/grass/torch
+    if (this.isPlantId(id)) return true;
+
+    return false;
+  }
+
+  _applySponge(wx, wy, wz, radius = 6) {
+    const r2 = radius * radius;
+
+    const doBatch = !this._batchChunks;
+    if (doBatch) this.beginBatch();
+
+    for (let y = wy - radius; y <= wy + radius; y++) {
+      if (y < Y_MIN || y > Y_MAX) continue;
+      for (let z = wz - radius; z <= wz + radius; z++) {
+        for (let x = wx - radius; x <= wx + radius; x++) {
+          const dx = x - wx;
+          const dy = y - wy;
+          const dz = z - wz;
+          if (dx * dx + dy * dy + dz * dz > r2) continue; // spherical-ish
+
+          const id = this.getBlockWorld(x, y, z);
+          if (!this.isLiquidId(id)) continue;
+
+          // Immediately dry this block
+          this._setBlockRaw(x, y, z, BLOCK.AIR);
+
+          // Start retraction wave from this node's descendants
+          this._scheduleRetractionFromRemovedFluid(x, y, z, id);
+        }
+      }
+    }
+
+    if (doBatch) this.endBatch();
+  }
+
+  // ============================================================
+  // Basic helpers
+  // ============================================================
+
+  key(cx, cz) {
+    return `${cx},${cz}`;
+  }
+
+  isWaterId(id) {
+    return id === BLOCK.WATER;
+  }
+
+  isLavaId(id) {
+    return id === BLOCK.LAVA;
+  }
+
+  isLiquidId(id) {
+    return this.isWaterId(id) || this.isLavaId(id);
+  }
+
+  isLavaAt(wx, wy, wz) {
+    const id = this.getBlockWorld(wx, wy, wz);
+    return id === BLOCK.LAVA;
+  }
+
+  isWaterAt(wx, wy, wz) {
+    const id = this.getBlockWorld(wx, wy, wz);
+    return id === BLOCK.WATER;
+  }
+
+  isLiquidAt(wx, wy, wz) {
+    const id = this.getBlockWorld(wx, wy, wz);
+    return this.isLiquidId(id);
+  }
+
+  isPlantId(id) {
+    return (
+      id === BLOCK.GRASS ||
+      id === BLOCK.DANDELION ||
+      id === BLOCK.ROSE ||
+      id === BLOCK.RED_MUSHROOM ||
+      id === BLOCK.BROWN_MUSHROOM ||
+      id === BLOCK.TORCH
+    );
+  }
+
+  /**
+   * Returns whether the block at (wx, wy, wz) is walkable.
+   * (Not air or liquid, and below has solid ground)
+   */
+  isWalkable(wx, wy, wz) {
+    const id = this.getBlockWorld(wx, wy, wz);
+    const below = this.getBlockWorld(wx, wy - 1, wz);
+    const solid =
+      id === BLOCK.AIR &&
+      below !== BLOCK.AIR &&
+      below !== BLOCK.WATER &&
+      below !== BLOCK.LAVA;
+    return solid;
   }
 
   _randomRainInterval() {
@@ -127,21 +254,13 @@ export class VoxelWorld {
     this._mobSpawnInterval = 2 * Math.random() * 3;
   }
 
-  isWaterId(id) {
-    return id === BLOCK.WATER;
-  }
-
-  isLavaId(id) {
-    return id === BLOCK.LAVA;
-  }
-
-  isLavaAt(wx, wy, wz) {
-    const id = this.getBlockWorld(wx, wy, wz);
-    return this.isLavaId(id);
-  }
+  // ============================================================
+  // Mob / rain logic (unchanged in behavior)
+  // ============================================================
 
   // Register mob globally and in its render chunk's entities list
   _registerMob(mob, wx, wz) {
+    // currently unused – left as-is for future use
     // this.mobs.push(mob);
     // const cx = Math.floor(Math.floor(wx) / CHUNK_SIZE);
     // const cz = Math.floor(Math.floor(wz) / CHUNK_SIZE);
@@ -371,35 +490,6 @@ export class VoxelWorld {
     }
   }
 
-  stepWorld(delta) {
-    let dt = delta / 1000;
-
-    // Gradual spawning: at most one mob per interval
-    this._trySpawnMobGlobal(dt);
-
-    // -----------------------
-    // Rain global controller
-    // -----------------------
-    this._rainTimer += dt;
-
-    if (this._rainTimer >= this._rainNextToggle) {
-      this._rainTimer = 0;
-      this._rainNextToggle = this._randomRainInterval();
-
-      // 50% chance to toggle state
-      this.isRaining = !this.isRaining;
-
-      console.log("Rain toggled:", this.isRaining);
-
-      // if you have a GrRain object:
-      this.rainSystem.setVisible(this.isRaining);
-    }
-  }
-
-  key(cx, cz) {
-    return `${cx},${cz}`;
-  }
-
   spawnMobAt(type, x, y, z) {
     console.log("spawning! ", type, x, y, z);
     let mob;
@@ -407,11 +497,7 @@ export class VoxelWorld {
       mob = new GrPig(
         "models/minecraft-pig/source/MinecraftPig/Pig.fbx",
         this,
-        {
-          x,
-          y,
-          z,
-        }
+        { x, y, z }
       );
     } else if (type === "sheep") {
       mob = new GrSheep(
@@ -443,6 +529,7 @@ export class VoxelWorld {
   getChunk(cx, cz) {
     return this.chunks.get(this.key(cx, cz)) ?? null;
   }
+
   setChunk(cx, cz, chunk) {
     this.chunks.set(this.key(cx, cz), chunk);
   }
@@ -480,6 +567,96 @@ export class VoxelWorld {
     this._batchChunks = null;
   }
 
+  // ============================================================
+  // Chunk + meta helpers used by fluids
+  // ============================================================
+
+  _getChunkAndLocal(wx, wy, wz) {
+    wx = Math.floor(wx);
+    wy = Math.floor(wy);
+    wz = Math.floor(wz);
+    const cx = Math.floor(wx / CHUNK_SIZE);
+    const cz = Math.floor(wz / CHUNK_SIZE);
+    const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    const chunk = this.getChunk(cx, cz);
+    if (!chunk) return null;
+    return { chunk, cx, cz, lx, ly: wy, lz };
+  }
+
+  _getFluidLevel(wx, wy, wz) {
+    const info = this._getChunkAndLocal(wx, wy, wz);
+    if (!info) return null;
+    const { chunk, lx, ly, lz } = info;
+    if (!chunk.getMeta) return null;
+    const meta = chunk.getMeta(lx, ly, lz);
+    if (meta == null) return null;
+    return meta;
+  }
+
+  _setFluidLevel(wx, wy, wz, type, level) {
+    const info = this._getChunkAndLocal(wx, wy, wz);
+    if (!info) return;
+    const { chunk, lx, ly, lz } = info;
+
+    const id = chunk.getBlock(lx, ly, lz);
+    if (id !== type) return;
+
+    if (chunk.setMeta) {
+      chunk.setMeta(lx, ly, lz, level);
+    }
+  }
+
+  // ============================================================
+  // Fluid queue (ring-buffer)
+  // ============================================================
+
+  _fluidKey(type, x, y, z) {
+    return `${type}:${x},${y},${z}`;
+  }
+
+  _decodeFluidKey(key) {
+    // key format: `${type}:${x},${y},${z}`
+    const [typeStr, coordStr] = key.split(":");
+    const [xStr, yStr, zStr] = coordStr.split(",");
+    return {
+      type: Number(typeStr),
+      x: Number(xStr),
+      y: Number(yStr),
+      z: Number(zStr),
+    };
+  }
+
+  _enqueueFluidCell(x, y, z, type) {
+    x = Math.floor(x);
+    y = Math.floor(y);
+    z = Math.floor(z);
+
+    this._fluidQueue.push({ x, y, z, type });
+  }
+
+  _dequeueFluid() {
+    if (this._fluidHead >= this._fluidQueue.length) return null;
+    const node = this._fluidQueue[this._fluidHead++];
+    // compact occasionally so array doesn’t grow forever
+    if (
+      this._fluidHead > 1024 &&
+      this._fluidHead * 2 > this._fluidQueue.length
+    ) {
+      this._fluidQueue = this._fluidQueue.slice(this._fluidHead);
+      this._fluidHead = 0;
+    }
+    return node;
+  }
+
+  _getFluidQueueSize() {
+    return this._fluidQueue.length - this._fluidHead;
+  }
+
+  // ============================================================
+  // Block setters (with batching + fluid hooks)
+  // ============================================================
+
   /**
    * World-space setter with cross-chunk support.
    * - Does nothing if target chunk does not exist.
@@ -500,36 +677,71 @@ export class VoxelWorld {
     const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
 
     const chunk = this.getChunk(cx, cz);
-    if (!chunk) return; // obey “no chunk creation” rule
+    if (!chunk) return;
 
     const oldId = chunk.getBlock(lx, wy, lz);
-    if (oldId === id) return; // no change, no rebuild
+    if (oldId === id) return;
 
     // Update voxel data
     chunk.setBlock(lx, wy, lz, id);
 
-    // ---- Collect all affected chunk coords ----
+    // ---- schedule chunk rebuilds ----
     const affected = [[cx, cz]];
-
-    // If we modified a block at local x=0 or x=CHUNK_SIZE-1,
-    // the neighbor chunk on that side also needs to rebuild
     if (lx === 0) affected.push([cx - 1, cz]);
     if (lx === CHUNK_SIZE - 1) affected.push([cx + 1, cz]);
     if (lz === 0) affected.push([cx, cz - 1]);
     if (lz === CHUNK_SIZE - 1) affected.push([cx, cz + 1]);
 
-    // ---- Instead of rebuilding immediately ----
     for (const [rcx, rcz] of affected) {
       const key = this.key(rcx, rcz);
-
       if (this._batchChunks) {
-        // batching mode → record only
         this._batchChunks.add(key);
       } else {
-        // normal mode → immediate rebuild
         const renderChunk = this.renderChunks.get(key);
         if (renderChunk && typeof renderChunk.rebuildGeometry === "function") {
           renderChunk.rebuildGeometry();
+        }
+      }
+    }
+
+    // --- Sponge logic: when a sponge is placed, clear nearby fluids ---
+    if (id === BLOCK.SPONGE) {
+      this._applySponge(wx, wy, wz, 6); // tweak radius as you like
+    }
+
+    const wasFluid = this.isLiquidId(oldId);
+    const isFluid = this.isLiquidId(id);
+
+    // 💧 New fluid block: treat as a source node for the sim
+    if (isFluid && !wasFluid) {
+      this._enqueueFluidCell(wx, wy, wz, id);
+      const key = this._fluidKey(id, wx, wy, wz);
+      this._fluidParents.set(key, null); // root
+    }
+
+    // ❌ Fluid removed: start gradual retraction from this node
+    if (wasFluid && !isFluid) {
+      this._scheduleRetractionFromRemovedFluid(wx, wy, wz, oldId);
+    }
+
+    // 🧱 If this block just became AIR, nearby fluids might flow into it
+    if (id === BLOCK.AIR) {
+      const dirs6 = [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+      ];
+
+      for (const [dx, dy, dz] of dirs6) {
+        const nx = wx + dx;
+        const ny = wy + dy;
+        const nz = wz + dz;
+        const nid = this.getBlockWorld(nx, ny, nz);
+        if (this.isLiquidId(nid)) {
+          this._enqueueFluidCell(nx, ny, nz, nid);
         }
       }
     }
@@ -564,23 +776,28 @@ export class VoxelWorld {
 
     // ---- Collect all affected chunk coords ----
     const affected = [[cx, cz]];
-
-    // If we modified a block at local x=0 or x=CHUNK_SIZE-1,
-    // the neighbor chunk on that side also needs to rebuild
     if (lx === 0) affected.push([cx - 1, cz]);
     if (lx === CHUNK_SIZE - 1) affected.push([cx + 1, cz]);
     if (lz === 0) affected.push([cx, cz - 1]);
     if (lz === CHUNK_SIZE - 1) affected.push([cx, cz + 1]);
 
-    // ---- Rebuild render chunks (if they're loaded) ----
+    // ---- Rebuild render chunks (respect batching) ----
     for (const [rcx, rcz] of affected) {
       const key = this.key(rcx, rcz);
-      const renderChunk = this.renderChunks.get(key);
-      if (renderChunk && typeof renderChunk.rebuildGeometry === "function") {
-        renderChunk.rebuildGeometry();
+      if (this._batchChunks) {
+        this._batchChunks.add(key);
+      } else {
+        const renderChunk = this.renderChunks.get(key);
+        if (renderChunk && typeof renderChunk.rebuildGeometry === "function") {
+          renderChunk.rebuildGeometry();
+        }
       }
     }
   }
+
+  // ============================================================
+  // Surface / solidity helpers
+  // ============================================================
 
   /**
    * Returns the highest solid block Y coordinate at (wx, wz)
@@ -615,59 +832,297 @@ export class VoxelWorld {
     return !!id && !this.isLiquidId(id) && !this.isPlantId(id);
   }
 
-  /**
-   * Checks if the block at world coordinates is considered "liquid".
-   * Useful for detecting swimming or buoyancy states.
-   */
-  isLiquidAt(wx, wy, wz) {
-    const id = this.getBlockWorld(wx, wy, wz);
-    return this.isLiquidId(id);
+  // ============================================================
+  // Fluid logic
+  // ============================================================
+
+  _canFluidEnter(type, targetId, wx, wy, wz) {
+    const other =
+      type === BLOCK.WATER ? BLOCK.LAVA : type === BLOCK.LAVA ? BLOCK.WATER : 0;
+
+    // ✅ Any “replaceable” block (air, plants, etc.) can be overwritten by fluid
+    if (this.isReplaceableByFluid(targetId)) {
+      return true;
+    }
+
+    // 💥 Water <-> Lava reaction → cobblestone
+    if (targetId === other) {
+      this.setBlockWorld(wx, wy, wz, BLOCK.COBBLESTONE);
+      return false;
+    }
+
+    // 🧱 True solids (dirt, stone, etc.) block fluid
+    return false;
   }
 
-  isLavaAt(wx, wy, wz) {
+  _placeFluidWithLevel(wx, wy, wz, type, level, parentKey = null) {
+    const other =
+      type === BLOCK.WATER ? BLOCK.LAVA : type === BLOCK.LAVA ? BLOCK.WATER : 0;
+
+    const existing = this.getBlockWorld(wx, wy, wz);
+    const key = this._fluidKey(type, wx, wy, wz);
+
+    // Direct reaction → cobblestone
+    if (existing === other) {
+      const otherKey = this._fluidKey(existing, wx, wy, wz);
+      this._fluidParents.delete(otherKey);
+      this._fluidChildren.delete(otherKey);
+
+      this.setBlockWorld(wx, wy, wz, BLOCK.COBBLESTONE);
+      return;
+    }
+
+    // If it's already same fluid with a better (smaller) level, don't overwrite
+    if (existing === type) {
+      const curLevel = this._getFluidLevel(wx, wy, wz);
+      if (curLevel != null && curLevel <= level) return;
+    }
+
+    // Place block + meta
+    this.setBlockWorldWithMeta(wx, wy, wz, type, level);
+
+    // ----- parent graph tracking -----
+    const oldParent = this._fluidParents.get(key);
+    if (oldParent && oldParent !== parentKey) {
+      const kids = this._fluidChildren.get(oldParent);
+      if (kids) kids.delete(key);
+    }
+
+    if (parentKey) {
+      this._fluidParents.set(key, parentKey);
+      let kids = this._fluidChildren.get(parentKey);
+      if (!kids) {
+        kids = new Set();
+        this._fluidChildren.set(parentKey, kids);
+      }
+      kids.add(key);
+    } else {
+      this._fluidParents.set(key, null);
+    }
+
+    this._enqueueFluidCell(wx, wy, wz, type);
+  }
+
+  _scheduleRetractionFromRemovedFluid(wx, wy, wz, type) {
+    const rootKey = this._fluidKey(type, wx, wy, wz);
+
+    // 🌊 Start retraction at this node only.
+    // Children will be enqueued gradually in _processRetractionKey().
+    this._retractPending.add(rootKey);
+  }
+
+  _takeOneRetractPending() {
+    for (const key of this._retractPending) {
+      this._retractPending.delete(key);
+      return key;
+    }
+    return null;
+  }
+  _processRetractionKey(key) {
+    const { type, x, y, z } = this._decodeFluidKey(key);
+
+    const id = this.getBlockWorld(x, y, z);
+    if (id === type) {
+      // Use raw setter to avoid re-triggering logic
+      this._setBlockRaw(x, y, z, BLOCK.AIR);
+    }
+
+    // Wavefront: now schedule its children for later ticks
+    const children = this._fluidChildren.get(key);
+    if (children) {
+      for (const ck of children) {
+        this._retractPending.add(ck);
+      }
+      this._fluidChildren.delete(key);
+    }
+
+    // Detach from parent
+    const parentKey = this._fluidParents.get(key);
+    if (parentKey) {
+      const s = this._fluidChildren.get(parentKey);
+      if (s) s.delete(key);
+    }
+    this._fluidParents.delete(key);
+  }
+
+  _processFluidCell(node) {
+    const { x, y, z, type } = node;
+    const idHere = this.getBlockWorld(x, y, z);
+    if (idHere !== type) return;
+
+    const isWater = type === BLOCK.WATER;
+    const maxLevel = isWater ? this._waterMaxLevel : this._lavaMaxLevel;
+
+    let level = this._getFluidLevel(x, y, z);
+    if (level == null) level = 0; // default to source if unknown
+
+    const belowId = this.getBlockWorld(x, y - 1, z);
+    if (this._canFluidEnter(type, belowId, x, y - 1, z)) {
+      // ✅ downhill / vertical flow acts as a fresh local source (level 0)
+      const parentKey = this._fluidKey(type, x, y, z);
+      this._placeFluidWithLevel(x, y - 1, z, type, 0, parentKey);
+      return; // gravity dominates
+    }
+
+    if (level < maxLevel) {
+      const nextLevel = level + 1;
+      const parentKey = this._fluidKey(type, x, y, z);
+
+      const dirs = [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ];
+
+      for (const [dx, dz] of dirs) {
+        const nx = x + dx;
+        const nz = z + dz;
+
+        const targetId = this.getBlockWorld(nx, y, nz);
+        if (!this._canFluidEnter(type, targetId, nx, y, nz)) continue;
+
+        this._placeFluidWithLevel(nx, y, nz, type, nextLevel, parentKey);
+      }
+    }
+  }
+
+  _setBlockRaw(wx, wy, wz, id) {
+    if (wy < Y_MIN || wy > Y_MAX) return;
+
     wx = Math.floor(wx);
     wy = Math.floor(wy);
     wz = Math.floor(wz);
-    const id = this.getBlockWorld(wx, wy, wz);
-    return id === BLOCK.LAVA;
+
+    const cx = Math.floor(wx / CHUNK_SIZE);
+    const cz = Math.floor(wz / CHUNK_SIZE);
+    const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+    const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+
+    const chunk = this.getChunk(cx, cz);
+    if (!chunk) return;
+
+    const oldId = chunk.getBlock(lx, wy, lz);
+    if (oldId === id) return;
+
+    chunk.setBlock(lx, wy, lz, id);
+
+    const affected = [[cx, cz]];
+    if (lx === 0) affected.push([cx - 1, cz]);
+    if (lx === CHUNK_SIZE - 1) affected.push([cx + 1, cz]);
+    if (lz === 0) affected.push([cx, cz - 1]);
+    if (lz === CHUNK_SIZE - 1) affected.push([cx, cz + 1]);
+
+    for (const [rcx, rcz] of affected) {
+      const key = this.key(rcx, rcz);
+      if (this._batchChunks) {
+        this._batchChunks.add(key);
+      } else {
+        const renderChunk = this.renderChunks.get(key);
+        if (renderChunk && typeof renderChunk.rebuildGeometry === "function") {
+          renderChunk.rebuildGeometry();
+        }
+      }
+    }
   }
 
-  isWaterAt(wx, wy, wz) {
-    wx = Math.floor(wx);
-    wy = Math.floor(wy);
-    wz = Math.floor(wz);
-    const id = this.getBlockWorld(wx, wy, wz);
-    return id === BLOCK.WATER;
+  _stepFluids(dt) {
+    // 1️⃣ Active fluid spreading
+    const size = this._getFluidQueueSize();
+    if (size > 0) {
+      const MAX_PER_TICK = 128; // spreading
+      const count = Math.min(MAX_PER_TICK, size);
+
+      const doBatch = !this._batchChunks;
+      if (doBatch) this.beginBatch();
+
+      for (let i = 0; i < count; i++) {
+        const node = this._dequeueFluid();
+        if (!node) break;
+        this._processFluidCell(node);
+      }
+
+      if (doBatch) this.endBatch();
+    }
+
+    // 2️⃣ Gradual retraction waves
+    if (this._retractPending.size > 0) {
+      const MAX_RETRACT_PER_TICK = 3; // 👈 make this small so it feels gradual
+      const doBatch = !this._batchChunks;
+      if (doBatch) this.beginBatch();
+
+      for (let i = 0; i < MAX_RETRACT_PER_TICK; i++) {
+        const key = this._takeOneRetractPending();
+        if (!key) break;
+        this._processRetractionKey(key);
+      }
+
+      if (doBatch) this.endBatch();
+    }
   }
 
-  isLiquidId(id) {
-    return this.isWaterId(id) || this.isLavaId(id);
+  // Optional: neighbor reaction scan (currently not strictly needed,
+  // since direct contact is handled by _canFluidEnter/_placeFluidWithLevel)
+  _handleFluidReaction(type, wx, wy, wz) {
+    const other =
+      type === BLOCK.WATER ? BLOCK.LAVA : type === BLOCK.LAVA ? BLOCK.WATER : 0;
+    if (!other) return;
+
+    const dirs6 = [
+      [1, 0, 0],
+      [-1, 0, 0],
+      [0, 1, 0],
+      [0, -1, 0],
+      [0, 0, 1],
+      [0, 0, -1],
+    ];
+
+    for (const [dx, dy, dz] of dirs6) {
+      const nx = wx + dx;
+      const ny = wy + dy;
+      const nz = wz + dz;
+
+      const nid = this.getBlockWorld(nx, ny, nz);
+      if (nid === other) {
+        this.setBlockWorld(nx, ny, nz, BLOCK.COBBLESTONE);
+      }
+    }
   }
 
-  isPlantId(id) {
-    return (
-      id === BLOCK.GRASS ||
-      id === BLOCK.DANDELION ||
-      id === BLOCK.ROSE ||
-      id === BLOCK.RED_MUSHROOM ||
-      id === BLOCK.BROWN_MUSHROOM ||
-      id === BLOCK.TORCH
-    );
-  }
+  // ============================================================
+  // World step
+  // ============================================================
 
-  /**
-   * Returns whether the block at (wx, wy, wz) is walkable.
-   * (Not air or liquid, and below has solid ground)
-   */
-  isWalkable(wx, wy, wz) {
-    const id = this.getBlockWorld(wx, wy, wz);
-    const below = this.getBlockWorld(wx, wy - 1, wz);
-    const solid =
-      id === BLOCK.AIR &&
-      below !== BLOCK.AIR &&
-      below !== BLOCK.WATER &&
-      below !== BLOCK.LAVA;
-    return solid;
+  stepWorld(delta) {
+    let dt = delta / 1000;
+
+    // Gradual spawning: at most one mob per interval
+    this._trySpawnMobGlobal(dt);
+
+    // -----------------------
+    // Rain global controller
+    // -----------------------
+    this._rainTimer += dt;
+
+    if (this._rainTimer >= this._rainNextToggle) {
+      this._rainTimer = 0;
+      this._rainNextToggle = this._randomRainInterval();
+
+      // 50% chance to toggle state
+      this.isRaining = !this.isRaining;
+
+      console.log("Rain toggled:", this.isRaining);
+
+      // if you have a GrRain object:
+      this.rainSystem.setVisible(this.isRaining);
+    }
+
+    // 💧 fluid tick pacing
+    this._fluidAccum += dt;
+    while (this._fluidAccum >= this._fluidStepInterval) {
+      this._fluidAccum -= this._fluidStepInterval;
+      this._stepFluids(this._fluidStepInterval);
+    }
   }
 }
 
