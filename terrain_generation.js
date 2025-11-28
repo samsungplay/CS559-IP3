@@ -746,7 +746,7 @@ function carveLavaBlobs(chunk, noise, cx, cz) {
 
 /** ------------------- Public: one chunk ------------------- */
 //this function has beeen generated with the help of copilot
-export function generateTerrainForChunk(chunk, seed = 1337) {
+export function generateTerrainForChunk(chunk, seed = 1337, voxelWorld = null) {
   const noise = makePerlin(seed);
   const cx = chunk.chunkX * CHUNK_SIZE;
   const cz = chunk.chunkZ * CHUNK_SIZE;
@@ -843,7 +843,7 @@ export function generateTerrainForChunk(chunk, seed = 1337) {
   // Pass 6: connected lava blobs
   carveLavaBlobs(chunk, noise, cx, cz);
 
-  const writer = makeBlockWriter(chunk, pendingBlocks);
+  const writer = makeBlockWriter(chunk, pendingBlocks, voxelWorld);
 
   // Pass 7: village placement
   placeVillages(chunk, noise, cx, cz, tops, seed, writer);

@@ -340,6 +340,47 @@ export class GrWorld {
     this.speedcontrol = params.speedcontrol;
   } // end of constructor
 
+  /**
+   * Remove an object from the world - inverse of add()
+   * @param {GrObject} grobj
+   */
+  remove(grobj) {
+    if (!grobj) return;
+
+    // 1. Remove all of the object's three.js objects from whatever scene they are in
+    grobj.objects.forEach((element) => {
+      if (element.parent) {
+        element.parent.remove(element);
+      }
+    });
+
+    // 2. Remove from the world's object list
+    const idx = this.objects.indexOf(grobj);
+    if (idx !== -1) {
+      this.objects.splice(idx, 1);
+    }
+
+    // 3. Remove from the name map (if it was registered there)
+    if (grobj.name && this.objNames[grobj.name] === grobj) {
+      delete this.objNames[grobj.name];
+    }
+
+    // 4. If this was the active object, clear it and reset mode
+    if (this.active_object === grobj) {
+      this.active_object = undefined;
+      this.solo_mode = false;
+      // Make sure we are back to the main scene / camera
+      this.active_scene = this.scene;
+      this.active_camera = this.camera;
+      if (this.orbit_controls) {
+        this.orbit_controls.object = this.camera;
+      }
+      if (this.fly_controls) {
+        this.fly_controls.object = this.camera;
+      }
+    }
+  }
+
   restoreActiveObject() {
     if (this.active_object) {
       // In case we were in drive mode, make the active object visible.

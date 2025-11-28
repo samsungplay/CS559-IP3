@@ -8,6 +8,9 @@ export class PendingBlocks {
   constructor() {
     this.map = new Map(); // key `${cx},${cz}` -> {blocks:[{lx,y,lz,id}], metas:[{lx,y,lz,val}]}
   }
+  clear() {
+    this.map.clear();
+  }
   _key(cx, cz) {
     return `${cx},${cz}`;
   }
@@ -47,9 +50,10 @@ export class PendingBlocks {
 }
 
 //this function has been generated with the help of copilot
-export function makeBlockWriter(chunk, pending) {
+export function makeBlockWriter(chunk, pending, voxelWorld = null) {
   const baseCx = chunk.chunkX,
     baseCz = chunk.chunkZ;
+
   function worldToLocal(wx, wz) {
     const cx = Math.floor(wx / CHUNK_SIZE);
     const cz = Math.floor(wz / CHUNK_SIZE);
@@ -57,9 +61,12 @@ export function makeBlockWriter(chunk, pending) {
     const lz = wz - cz * CHUNK_SIZE;
     return { cx, cz, lx, lz };
   }
+
   function setBlock(wx, wy, wz, id) {
     if (wy < Y_MIN || wy > Y_MAX) return;
     const { cx, cz, lx, lz } = worldToLocal(wx, wz);
+
+    // 1) Inside this chunk → direct write
     if (
       cx === baseCx &&
       cz === baseCz &&
@@ -69,13 +76,32 @@ export function makeBlockWriter(chunk, pending) {
       lz < CHUNK_SIZE
     ) {
       chunk.setBlock(lx, wy, lz, id);
-    } else {
-      pending.addBlock(cx, cz, lx, wy, lz, id);
+      return;
     }
+
+    // 2) Neighbor chunk exists → direct write to neighbor
+    if (voxelWorld) {
+      const neighbor = voxelWorld.getChunk(cx, cz);
+      if (
+        neighbor &&
+        lx >= 0 &&
+        lx < CHUNK_SIZE &&
+        lz >= 0 &&
+        lz < CHUNK_SIZE
+      ) {
+        neighbor.setBlock(lx, wy, lz, id);
+        return;
+      }
+    }
+
+    // 3) Neighbor not generated yet → queue in pending
+    pending.addBlock(cx, cz, lx, wy, lz, id);
   }
+
   function setMeta(wx, wy, wz, val) {
     if (wy < Y_MIN || wy > Y_MAX) return;
     const { cx, cz, lx, lz } = worldToLocal(wx, wz);
+
     if (
       cx === baseCx &&
       cz === baseCz &&
@@ -86,10 +112,27 @@ export function makeBlockWriter(chunk, pending) {
       lz < CHUNK_SIZE
     ) {
       chunk.setMeta(lx, wy, lz, val);
-    } else {
-      pending.addMeta(cx, cz, lx, wy, lz, val);
+      return;
     }
+
+    if (voxelWorld) {
+      const neighbor = voxelWorld.getChunk(cx, cz);
+      if (
+        neighbor &&
+        neighbor.setMeta &&
+        lx >= 0 &&
+        lx < CHUNK_SIZE &&
+        lz >= 0 &&
+        lz < CHUNK_SIZE
+      ) {
+        neighbor.setMeta(lx, wy, lz, val);
+        return;
+      }
+    }
+
+    pending.addMeta(cx, cz, lx, wy, lz, val);
   }
+
   return { chunk, pending, setBlock, setMeta, chunkX: baseCx, chunkZ: baseCz };
 }
 

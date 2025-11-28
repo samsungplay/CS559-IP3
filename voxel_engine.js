@@ -251,7 +251,7 @@ export class VoxelWorld {
 
   // Randomize the delay between spawn attempts: 2-5 seconds
   _resetMobSpawnInterval() {
-    this._mobSpawnInterval = 2 * Math.random() * 3;
+    this._mobSpawnInterval = 2 + Math.random() * 3;
   }
 
   // ============================================================
@@ -259,20 +259,7 @@ export class VoxelWorld {
   // ============================================================
 
   // Register mob globally and in its render chunk's entities list
-  _registerMob(mob, wx, wz) {
-    // currently unused – left as-is for future use
-    // this.mobs.push(mob);
-    // const cx = Math.floor(Math.floor(wx) / CHUNK_SIZE);
-    // const cz = Math.floor(Math.floor(wz) / CHUNK_SIZE);
-    // const key = this.key(cx, cz);
-    // const renderChunk = this.renderChunks.get(key);
-    // if (renderChunk) {
-    //   if (!Array.isArray(renderChunk.entities)) {
-    //     renderChunk.entities = [];
-    //   }
-    //   renderChunk.entities.push(mob);
-    // }
-  }
+  _registerMob(mob, wx, wz) {}
 
   despawnMob(mob) {
     // 1) Remove from global mob list
@@ -472,7 +459,6 @@ export class VoxelWorld {
 
           const mob = this.spawnMobAt(type, wx, sy, wz);
           if (mob) {
-            this.mobs.push(mob);
             return;
           }
         }
@@ -482,7 +468,6 @@ export class VoxelWorld {
         if (caveY !== null) {
           const mob = this.spawnMobAt("creeper", wx, caveY, wz);
           if (mob) {
-            this.mobs.push(mob);
             return;
           }
         }
@@ -513,8 +498,16 @@ export class VoxelWorld {
       );
     }
 
+    if (!mob) return null;
+
     this.renderWorld.add(mob);
+
+    // 🔹 NEW: every active mob in loaded world is tracked here
+    this.mobs.push(mob);
+
+    // (optional) keep this for future per-chunk entity lists if you want
     this._registerMob(mob, x, y, z);
+
     return mob;
   }
 
