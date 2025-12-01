@@ -125,7 +125,13 @@ function makeIconCubeGeometry(bd) {
     uvs.push(...uv4);
 
     // 3) vertex colors from tint
-    const tint = bd.tints?.[f.key] ?? 0xffffff;
+    let tint = bd.tints?.[f.key] ?? 0xffffff;
+
+    if (window.prototype) {
+      // Use the hashed ID color we generated in block_factory
+      // Fallback to tint if protoColor is missing
+      tint = bd.protoColor ?? tint;
+    }
     const c = new T.Color(tint);
     for (let i = 0; i < 4; i++) {
       colors.push(c.r, c.g, c.b);
@@ -429,25 +435,25 @@ export class BlockPicker {
 
       // 🌿 CROSS KIND (flowers, torches, etc.)
       if (bd.kind === "cross") {
-        const baseMap = (bd.material && bd.material.map) || atlasTexture;
+        let baseMap = (bd.material && bd.material.map) || atlasTexture;
 
         // ---- Figure out tint color ----
         let tintHex = 0xffffff;
 
-        // Prefer explicit tint fields on block data
-        if (bd.tintColors !== undefined) {
-          if (Array.isArray(bd.tintColors)) {
-            // If it's an array, take the first as "main" tint
-            tintHex = bd.tintColors[0];
-          } else {
-            tintHex = bd.tintColors;
+        if (window.prototype) {
+          baseMap = null; // No Texture
+          // Use the prototype color stored in registry, or default Green
+          tintHex = bd.protoColor ?? 0x228b22;
+        } else {
+          // ... (Keep existing tint logic for Normal Mode) ...
+          if (bd.tintColors !== undefined) {
+            if (Array.isArray(bd.tintColors)) tintHex = bd.tintColors[0];
+            else tintHex = bd.tintColors;
+          } else if (bd.tintColor !== undefined) {
+            tintHex = bd.tintColor;
+          } else if (bd.material && bd.material.color) {
+            tintHex = bd.material.color.getHex();
           }
-        } else if (bd.tintColor !== undefined) {
-          tintHex = bd.tintColor;
-        }
-        // Fallback to material color if present
-        else if (bd.material && bd.material.color) {
-          tintHex = bd.material.color.getHex();
         }
 
         const matA = new T.MeshBasicMaterial({
@@ -474,11 +480,11 @@ export class BlockPicker {
       else {
         const geom = makeIconCubeGeometry(bd);
         const mat = new T.MeshBasicMaterial({
-          map: atlasTexture,
-          vertexColors: true,
+          map: window.prototype ? null : atlasTexture, // No texture in proto mode
+          vertexColors: true, // This allows the Geom colors to show through
           transparent: true,
           alphaTest: 0.5,
-          toneMapped: false, // important so it doesn't get dark from tonemapping
+          toneMapped: false,
         });
 
         icon = new T.Mesh(geom, mat);

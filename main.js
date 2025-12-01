@@ -412,15 +412,13 @@ async function regenerateWorldInternal(seed, radiusChunks) {
   world.add(rainSystem);
 
   const vw = new VoxelWorld(world, rainSystem);
-  voxelWorldInstance = vw;
 
   const envProbe = new GrWaterEnvProbe(world, vw);
   world.add(envProbe);
 
-  vw.waterMaterial = createWaterMaterial(
-    envProbe.renderTarget.texture,
-    atlasTexture
-  );
+  const envMap = envProbe.renderTarget ? envProbe.renderTarget.texture : null;
+
+  vw.waterMaterial = createWaterMaterial(envMap, atlasTexture);
 
   // Sun & moon
   world.add(new GrSunAndMoon(world, vw));

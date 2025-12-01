@@ -352,51 +352,95 @@ export class GrEntity extends GrTickingObject {
 
     this._hurtMeshes = [];
 
-    // ---------- Load FBX ----------
-    const loader = new FBXLoader();
-    loader.load(
-      modelPath,
-      (fbx) => {
-        const s =
-          opts.modelScale !== undefined && opts.modelScale !== null
-            ? opts.modelScale
-            : 0.0035;
-        fbx.scale.set(s, s, s);
+    if (window.prototype) {
+      // 1. Create Simple Geometry
+      const width = (this.halfWidth || 0.35) * 2;
+      const height = this.height || 1.0;
 
-        const box = new T.Box3().setFromObject(fbx);
-        const yOffset = -box.min.y; // feet at y=0
-        fbx.position.set(0, yOffset, 0);
+      const geo = new T.BoxGeometry(width, height, width);
+      // Use color from opts, or default to gray
+      const color = opts.color !== undefined ? opts.color : 0xcccccc;
+      const mat = new T.MeshBasicMaterial({ color: color });
 
-        fbx.traverse(function (o) {
-          o.frustumCulled = false;
-          if (o.isSkinnedMesh) {
-            o.castShadow = true;
-            o.receiveShadow = true;
-          }
-        });
+      const mesh = new T.Mesh(geo, mat);
 
-        this._prepareRig(fbx); // subclass hook
-        this.visual.add(fbx);
-        this.visual.traverse((obj) => {
-          if (obj.isMesh) {
-            obj.userData.entity = this;
-            this._hurtMeshes.push(obj);
-            if (obj.material && obj.material.color && !obj.userData.baseColor) {
-              obj.userData.baseColor = obj.material.color.clone();
-            }
-          }
-        });
-        this._createHealthBar();
-        this.ready = true;
+      // 2. Adjust Pivot (FBX usually has pivot at feet, BoxGeometry is center)
+      mesh.position.y = height / 2;
 
-        this._pickNewTarget("spawn");
-        this._maybeEnterIdleByChance("spawn");
-      },
-      undefined,
-      (err) => {
-        console.error("🐾 Entity FBX load failed:", err);
+      this.visual.add(mesh);
+
+      // 3. Register hurt mesh for flashing red
+      mesh.userData.entity = this;
+      mesh.userData.baseColor = mat.color.clone();
+      this._hurtMeshes.push(mesh);
+
+      // 4. Create Health Bar & Set Ready
+      this._createHealthBar();
+      this.ready = true;
+
+      // 5. Trigger initial logic
+      this._pickNewTarget("spawn");
+      this._maybeEnterIdleByChance("spawn");
+
+      // 6. Handle Player Hand Socket Special Case
+      // Since we don't have bones in prototype mode, we attach the hand socket
+      // directly to the visual mesh so items appear floating in front/side.
+      if (this.name === "Player") {
+        this._handSocket = new T.Object3D();
+        this._handSocket.position.set(0.4, 0.8, 0.5); // Approximate hand position
+        this.visual.add(this._handSocket);
       }
-    );
+    } else {
+      // ---------- Load FBX ----------
+      const loader = new FBXLoader();
+      loader.load(
+        modelPath,
+        (fbx) => {
+          const s =
+            opts.modelScale !== undefined && opts.modelScale !== null
+              ? opts.modelScale
+              : 0.0035;
+          fbx.scale.set(s, s, s);
+
+          const box = new T.Box3().setFromObject(fbx);
+          const yOffset = -box.min.y; // feet at y=0
+          fbx.position.set(0, yOffset, 0);
+
+          fbx.traverse(function (o) {
+            o.frustumCulled = false;
+            if (o.isSkinnedMesh) {
+              o.castShadow = true;
+              o.receiveShadow = true;
+            }
+          });
+
+          this._prepareRig(fbx); // subclass hook
+          this.visual.add(fbx);
+          this.visual.traverse((obj) => {
+            if (obj.isMesh) {
+              obj.userData.entity = this;
+              this._hurtMeshes.push(obj);
+              if (
+                obj.material &&
+                obj.material.color &&
+                !obj.userData.baseColor
+              ) {
+                obj.userData.baseColor = obj.material.color.clone();
+              }
+            }
+          });
+          this._createHealthBar();
+          this.ready = true;
+
+          this._pickNewTarget("spawn");
+          this._maybeEnterIdleByChance("spawn");
+        },
+        undefined,
+        (err) => {
+          console.error("🐾 Entity FBX load failed:", err);
+        }
+      );
+    }
 
     // --- Combat / Hit Response ---
     this.knockbackVel = new T.Vector3(0, 0, 0);
@@ -1455,6 +1499,7 @@ export class GrPig extends GrEntity {
       idleChance: 0.35,
       legAxis: "z",
       bobAmp: 0.25,
+      color: 0xffaa00,
       ...opts,
     });
   }
@@ -1571,6 +1616,7 @@ export class GrSheep extends GrEntity {
 
       // Slightly puffier scale if needed, tweak if it looks wrong
       modelScale: 0.003,
+      color: 0xffffff,
 
       ...opts,
     });
@@ -2022,6 +2068,7 @@ export class GrCreeper extends GrEntity {
       // Model
       modelScale: 0.003,
       headScanAxis: "y",
+      color: 0x00ff00,
       ...opts,
     });
 
@@ -2450,6 +2497,7 @@ export class GrPlayer extends GrEntity {
       jumpCarryFactor: 0.35,
       jumpSpeed: 8.0,
       modelScale: 0.003,
+      color: 0x0000ff,
 
       ...opts,
     };
@@ -2704,6 +2752,7 @@ export class GrPlayer extends GrEntity {
 
   // ---------------- Rig setup ----------------
   _prepareRig(root) {
+    if (window.prototype) return;
     const boneMap = new Map();
 
     root.traverse((o) => {
@@ -2794,6 +2843,15 @@ export class GrPlayer extends GrEntity {
     }
 
     if (blockId == null) return;
+
+    if (window.prototype) {
+      const geom = new T.BoxGeometry(0.4, 0.4, 0.4);
+      const mat = new T.MeshBasicMaterial({ color: 0xffff00 }); // Yellow item
+      const mesh = new T.Mesh(geom, mat);
+      this.heldItemMesh = mesh;
+      this._handSocket.add(mesh);
+      return;
+    }
 
     const bd = getBlockData(blockId);
     if (!bd) return;

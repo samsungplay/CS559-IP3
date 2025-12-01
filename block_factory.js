@@ -1,38 +1,34 @@
 import * as T from "../libs/threeJS/build/three.module.js";
 
-// block data goes here (maps id => block data)
 const _BLOCK_DATA = new Map();
 
 //this function has been generated with the help of copilot
-/** Query block data by enum ID */
 export function getBlockData(id) {
   return _BLOCK_DATA.get(id) ?? null;
 }
-
 //this function has been generated with the help of copilot
-/** Register block data (solid/cross) */
 export function registerBlock(id, data) {
   _BLOCK_DATA.set(id, data);
 }
 
-/* ============================================================
-   Atlas / Material setup (this section of code has been generated with the help of copilot)
-   ============================================================ */
+// Atlas setup
 const ATLAS_SIZE = 256,
   TILE = 16,
   S = TILE / ATLAS_SIZE,
   HALF = 0.5 / ATLAS_SIZE;
 export let atlasTexture = null;
 
+//this function has been generated with the help of copilot
 export function initAtlas(texture) {
+  // ⭐ PATCH: Safety check
+  if (!texture) return;
+
   atlasTexture = texture;
   texture.magFilter = T.NearestFilter;
   texture.minFilter = T.NearestFilter;
 }
 
-/* ============================================================
-   Helpers (this section of code has been generated with the help of copilot)
-   ============================================================ */
+//this function has been generated with the help of copilot
 function tileRect(col, row) {
   const u0 = col * S + HALF,
     v0 = 1 - (row + 1) * S + HALF,
@@ -41,24 +37,33 @@ function tileRect(col, row) {
   return { u0, v0, u1, v1 };
 }
 
-/* ============================================================
-   Registration Helpers (this section of code has been generated with the help of copilot)
-   ============================================================ */
+//this function has been generated with the help of copilot
+// ⭐ PATCH: Helper to generate distinct colors for prototype mode
+function getProtoColor(id, overrideTint) {
+  if (overrideTint && overrideTint !== 0xffffff) return overrideTint;
+  // Hash the ID to get a consistent color so Dirt != Stone
+  const r = (id * 153) % 255;
+  const g = (id * 211) % 255;
+  const b = (id * 79) % 255;
+  return (r << 16) | (g << 8) | b;
+}
 
-/**
- * Registers a solid cube block (precomputes per-face data).
- * @param {number} id - Enum from BLOCK
- * @param {Object} coords - {top,bottom,north,south,east,west} or {col,row}
- * @param {Object} opts - misc options for this block
- */
+//this function has been generated with the help of copilot
 export function registerSolid(id, coords, opts = {}) {
-  const mat = new T.MeshLambertMaterial({
-    map: atlasTexture,
-    transparent: true,
-    side: T.FrontSide,
-    vertexColors: true, // enable tinting support
-  });
+  // ⭐ PATCH: Material switching
+  let mat;
+  if (window.prototype) {
+    mat = new T.MeshBasicMaterial({ vertexColors: true, side: T.FrontSide });
+  } else {
+    mat = new T.MeshLambertMaterial({
+      map: atlasTexture,
+      transparent: true,
+      side: T.FrontSide,
+      vertexColors: true,
+    });
+  }
 
+  // ... (keep faces/rects logic mostly same, though rects unused in prototype)
   const faces = {
     PX: coords.east ?? coords,
     NX: coords.west ?? coords,
@@ -67,15 +72,12 @@ export function registerSolid(id, coords, opts = {}) {
     PZ: coords.south ?? coords,
     NZ: coords.north ?? coords,
   };
-
   const rects = {};
-  for (const [dir, c] of Object.entries(faces)) {
+  for (const [dir, c] of Object.entries(faces))
     rects[dir] = tileRect(c.col, c.row);
-  }
 
-  // Optional texture rotation per face
   const rotations = {
-    PX: opts.rotations?.east ?? 0,
+    /* ... keep existing rotation logic ... */ PX: opts.rotations?.east ?? 0,
     NX: opts.rotations?.west ?? 0,
     PY: opts.rotations?.top ?? 0,
     NY: opts.rotations?.bottom ?? 0,
@@ -83,7 +85,6 @@ export function registerSolid(id, coords, opts = {}) {
     NZ: opts.rotations?.north ?? 0,
   };
 
-  // Optional per-face tints (default: white = no tint)
   const tintColors = {
     PX: opts.tintColors?.east ?? opts.tintColors ?? 0xffffff,
     NX: opts.tintColors?.west ?? opts.tintColors ?? 0xffffff,
@@ -101,20 +102,16 @@ export function registerSolid(id, coords, opts = {}) {
     rot: rotations,
     material: mat,
     occludesFaces: opts.occludesFaces ?? true,
+    // ⭐ PATCH: Store a prototype color
+    protoColor: getProtoColor(id, opts.tintColors?.top ?? opts.tintColors),
   });
 }
-
-/**
- * Registers a cross-plane (X-shaped) decorative block.
- * @param {number} id - Enum from BLOCK
- * @param {{col:number,row:number}} coord - atlas tile
- * @param {number} [size=1]
- * @param {Object} opts - misc options for this block
- */
+//this function has been generated with the help of copilot
 export function registerCross(id, coord, opts = {}, size = 1) {
   const { u0, v0, u1, v1 } = tileRect(coord.col, coord.row);
   const geo = new T.PlaneGeometry(size, size);
 
+  // Keep UV logic valid (even if unused in prototype)
   const uAttr = geo.getAttribute("uv");
   for (let i = 0; i < uAttr.count; i++) {
     const u = uAttr.getX(i),
@@ -123,16 +120,25 @@ export function registerCross(id, coord, opts = {}, size = 1) {
   }
   uAttr.needsUpdate = true;
 
-  // ⭐️ Move plane so its bottom edge is at y=0 (pivot at bottom-center)
   geo.translate(0, size * 0.5, 0);
 
-  const mat = new T.MeshLambertMaterial({
-    map: atlasTexture,
-    color: opts.tintColors ?? "white",
-    alphaTest: 0.5, // helps with cutout sprites
-    side: T.DoubleSide,
-    depthWrite: true, // or false if you see sorting issues with many sprites
-  });
+  // ⭐ PATCH: Explicit Material for Prototype Mode
+  let mat;
+  if (window.prototype) {
+    // Use a Basic Material with NO MAP.
+    mat = new T.MeshBasicMaterial({
+      color: getProtoColor(id, opts.tintColors?.top ?? opts.tintColors),
+      side: T.DoubleSide,
+    });
+  } else {
+    mat = new T.MeshLambertMaterial({
+      map: atlasTexture,
+      color: opts.tintColors ?? "white",
+      alphaTest: 0.5,
+      side: T.DoubleSide,
+      depthWrite: true,
+    });
+  }
 
   registerBlock(id, {
     ...opts,
@@ -141,5 +147,6 @@ export function registerCross(id, coord, opts = {}, size = 1) {
     material: mat,
     size,
     occludesFaces: opts.occludesFaces ?? false,
+    protoColor: getProtoColor(id, opts.tintColors?.top ?? opts.tintColors),
   });
 }

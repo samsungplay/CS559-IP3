@@ -1298,7 +1298,10 @@ function buildChunkGeometry(chunk, world) {
     }
     arr.uvs.push(...uv4);
 
-    const c = new T.Color(tint);
+    // If prototype mode, ignore the specific face tint and use the Block's ID color
+    const colorHex = window.prototype ? bd.protoColor : tint;
+
+    const c = new T.Color(colorHex);
     for (let i = 0; i < 4; i++) {
       arr.colors.push(c.r, c.g, c.b);
     }
@@ -1328,7 +1331,6 @@ function buildChunkGeometry(chunk, world) {
         const wz = chunk.chunkZ * CHUNK_SIZE + z;
 
         // ---------- CROSS-SHAPED BLOCKS (plants, torches, etc.) ----------
-        // ---------- CROSS-SHAPED BLOCKS (plants, torches, etc.) ----------
         if (bd.kind === "cross") {
           const isTorch = id === BLOCK.TORCH;
 
@@ -1344,6 +1346,16 @@ function buildChunkGeometry(chunk, world) {
           const g = new T.Group();
           g.add(a, b);
           g.position.set(wx + 0.5, wy, wz + 0.5);
+
+          if (window.prototype) {
+            // Just add the basic geometry, skip the complex glow overlay logic below
+            const g = new T.Group();
+            g.add(a, b);
+            g.position.set(wx + 0.5, wy, wz + 0.5);
+            // Apply rotation logic...
+            crossGroup.add(g);
+            continue;
+          }
 
           if (isTorch) {
             // Orient torch for wall / floor, as before
@@ -1492,16 +1504,32 @@ function buildChunkGeometry(chunk, world) {
     g.setAttribute("color", new T.Float32BufferAttribute(arr.colors, 3));
     g.setIndex(arr.indices);
 
-    const mat =
-      matOpts instanceof T.ShaderMaterial
-        ? matOpts
-        : new T.MeshLambertMaterial({
-            map: atlasTexture,
-            vertexColors: true,
-            alphaTest: 0.5,
-            side: T.FrontSide,
-            ...matOpts,
-          });
+    let mat;
+    if (window.prototype) {
+      // PROTOTYPE: Basic material, vertex colors enabled
+      mat = new T.MeshBasicMaterial({
+        vertexColors: true,
+        side: T.FrontSide,
+      });
+
+      // If it's transparent (glass/water), reduce opacity
+      if (matOpts && matOpts.transparent) {
+        mat.transparent = true;
+        mat.opacity = 0.6;
+      }
+    } else {
+      // NORMAL: Lambert with Atlas
+      mat =
+        matOpts instanceof T.ShaderMaterial
+          ? matOpts
+          : new T.MeshLambertMaterial({
+              map: atlasTexture,
+              vertexColors: true,
+              alphaTest: 0.5,
+              side: T.FrontSide,
+              ...matOpts,
+            });
+    }
 
     return new T.Mesh(g, mat);
   }

@@ -54,9 +54,11 @@ export const BLOCK = {
   TORCH: 42,
 };
 
-//initialize the atlas texture
-const atlas = new T.TextureLoader().load("./textures/terrain.png");
-initAtlas(atlas);
+if (!window.prototype) {
+  //initialize the atlas texture
+  const atlas = new T.TextureLoader().load("./textures/terrain.png");
+  initAtlas(atlas);
+}
 
 //register the blocks
 registerSolid(BLOCK.STONE, { col: 1, row: 0 });
