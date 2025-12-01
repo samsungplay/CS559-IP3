@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <!-- CS559 2025 Workbook -->
+
+    <link
+      href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- This style block has been generated with the help of copilot -->
+    <style>
+      :root {
+        --mc-green-dark: #1c3b13;
+        --mc-green: #3b6b1b;
+        --mc-green-light: #5fa829;
+
+        --mc-dirt-dark: #3b2a19;
+        --mc-dirt: #6b4b2c;
+        --mc-dirt-light: #a87a46;
+
+        --mc-gold: #f7d88a;
+
+        --mc-panel-bg: rgba(35, 45, 28, 0.96);
+        --mc-panel-border: #000000;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+        color: #fff;
+        font-family: "Press Start 2P", system-ui, sans-serif;
+        font-size: 11px;
+      }
+
+      button {
+        font-family: "Press Start 2P", system-ui, sans-serif;
+      }
+
+      #screenDiv {
+        width: 100vw;
+        height: 100vh;
+      }
+
+      /* ===== Generic menu overlay ===== */
+      .menu-overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 10000;
+        pointer-events: auto;
+        background: radial-gradient(
+            circle at top,
+            rgba(95, 168, 41, 0.38) 0,
+            transparent 55%
+          ),
+          radial-gradient(
+            circle at bottom,
+            rgba(168, 122, 70, 0.45) 0,
+            transparent 55%
+          ),
+          linear-gradient(#050505, #130d07 60%, #050505);
+      }
+
+      .menu-panel {
+        min-width: 50%;
+        max-width: 480px;
+        padding: 24px 28px;
+        border-radius: 6px;
+        background: var(--mc-panel-bg);
+        border: 4px solid var(--mc-panel-border);
+        box-shadow: 0 0 0 3px var(--mc-green), 0 0 18px rgba(0, 0, 0, 0.9);
+        text-shadow: 2px 2px #000;
+      }
+
+      .menu-title {
+        font-size: 24px;
+        margin: 0 0 4px 0;
+        color: var(--mc-gold);
+        letter-spacing: 1px;
+      }
+
+      .menu-subtitle {
+        margin: 0 0 16px 0;
+        color: #dcdcdc;
+        font-size: 9px;
+        text-transform: uppercase;
+        opacity: 0.9;
+      }
+
+      .menu-section-label {
+        font-size: 10px;
+        margin: 12px 0 4px 0;
+        color: #f0f0f0;
+      }
+
+      .menu-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .menu-row span.value-badge {
+        padding: 2px 6px;
+        background: #00000099;
+        border-radius: 3px;
+        font-size: 10px;
+      }
+
+      .menu-input,
+      .menu-slider {
+        width: 100%;
+      }
+
+      input[type="number"].menu-input {
+        padding: 4px 6px;
+        border-radius: 4px;
+        border: 2px solid #000;
+        background: #1a2812;
+        color: #f7f7f7;
+        font-family: inherit;
+        font-size: 10px;
+      }
+
+      input[type="number"].menu-input:focus {
+        outline: none;
+        border-color: var(--mc-green-light);
+      }
+
+      input[type="range"].menu-slider {
+        accent-color: var(--mc-green-light);
+      }
+
+      .menu-button {
+        margin-top: 14px;
+        width: 100%;
+        padding: 9px 12px;
+        border-radius: 4px;
+        border: 2px solid #000;
+        background: linear-gradient(var(--mc-green-light), var(--mc-green));
+        color: #fff;
+        font-weight: bold;
+        cursor: pointer;
+        text-shadow: 1px 1px #000;
+        letter-spacing: 0.5px;
+        font-size: 11px;
+      }
+
+      .menu-button:hover {
+        background: linear-gradient(#7fd943, #4b7f24);
+      }
+
+      .menu-button.secondary {
+        margin-top: 10px;
+        background: linear-gradient(var(--mc-dirt-light), var(--mc-dirt));
+      }
+
+      .menu-button.secondary:hover {
+        background: linear-gradient(#c78f4e, #7b5330);
+      }
+
+      .menu-tip {
+        margin-top: 10px;
+        font-size: 8.5px;
+        color: #dddddd;
+        opacity: 0.9;
+        line-height: 1.5;
+      }
+
+      .menu-columns {
+        display: flex;
+        gap: 16px;
+        margin-top: 10px;
+        align-items: flex-start;
+      }
+
+      .menu-column {
+        flex: 1;
+        min-width: 0;
+      }
+
+      /* Controls list */
+      .controls-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        column-gap: 12px;
+        row-gap: 12px;
+        font-size: 8.8px;
+      }
+
+      .controls-key {
+        color: var(--mc-gold);
+      }
+
+      .controls-desc {
+        color: #f0f0f0;
+        opacity: 0.9;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      /* ===== Loading screen (Minecraft-y) ===== */
+      #loading-screen {
+        position: fixed;
+        inset: 0;
+        display: none;
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+        background: radial-gradient(circle at top, #35511a 0, #040404 55%),
+          radial-gradient(circle at bottom, #6b4b2c 0, #040404 55%);
+        color: white;
+        z-index: 11000;
+        text-shadow: 2px 2px #000;
+      }
+
+      #loading-text {
+        font-size: 14px;
+        margin-bottom: 12px;
+      }
+
+      #loading-bar-container {
+        width: 60%;
+        max-width: 480px;
+        min-width: 260px;
+        height: 18px;
+        background: #222;
+        border-radius: 3px;
+        border: 3px solid #000;
+        box-shadow: 0 0 0 2px #3b6b1b, 0 0 14px rgba(0, 0, 0, 0.9);
+        overflow: hidden;
+      }
+
+      #loading-bar {
+        width: 0%;
+        height: 100%;
+        background: linear-gradient(90deg, #5fa829, #7fd943);
+        transition: width 0.16s linear;
+      }
+
+      .loading-tip {
+        margin-top: 10px;
+        font-size: 8.5px;
+        opacity: 0.9;
+        color: #d6f3c4;
+      }
+
+      /* ===== HUD overlay (crosshair + underwater tint) ===== */
+      #hud {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 5000;
+      }
+
+      #crosshair {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 14px;
+        height: 14px;
+        transform: translate(-50%, -50%);
+      }
+
+      #crosshair::before,
+      #crosshair::after {
+        content: "";
+        position: absolute;
+        background: white;
+      }
+
+      #crosshair::before {
+        width: 2px;
+        height: 14px;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      #crosshair::after {
+        width: 14px;
+        height: 2px;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+      }
+
+      #water-tint {
+        position: absolute;
+        inset: 0;
+        background: rgba(70, 120, 255, 0.25);
+        mix-blend-mode: screen;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.15s ease-out;
+      }
+    </style>
+    <script>
+      window.prototype = true;
+    </script>
+  </head>
+
+  <!-- This entire body block has been generated with the help of copilot -->
+  <body>
+    <!-- ===== Main World Generation Menu ===== -->
+    <div id="world-controls" class="menu-overlay">
+      <div class="menu-panel">
+        <h1 class="menu-title">VoxelCraft (Prototype Version)</h1>
+        <p class="menu-subtitle">Infinite voxel world – CS559 edition</p>
+
+        <div class="menu-columns">
+          <!-- Left column: world settings -->
+          <div class="menu-column">
+            <div class="menu-section-label">World Seed</div>
+            <input
+              type="number"
+              id="seed-input"
+              class="menu-input"
+              value="4061375"
+            />
+
+            <div class="menu-section-label">View Distance (Chunks)</div>
+            <div class="menu-row">
+              <input
+                type="range"
+                id="radius-slider"
+                class="menu-slider"
+                min="1"
+                max="10"
+                value="5"
+              />
+              <span id="radius-value" class="value-badge">5</span>
+            </div>
+
+            <div class="menu-section-label">Field of View (FOV)</div>
+            <div class="menu-row">
+              <input
+                type="range"
+                id="fov-slider"
+                class="menu-slider"
+                min="40"
+                max="120"
+                value="80"
+              />
+              <span id="fov-value" class="value-badge">80°</span>
+            </div>
+          </div>
+
+          <!-- Right column: controls help -->
+          <div class="menu-column">
+            <div class="menu-section-label">Controls</div>
+            <div class="controls-grid">
+              <div class="controls-key">W / A / S / D</div>
+              <div class="controls-desc">Move</div>
+
+              <div class="controls-key">Mouse</div>
+              <div class="controls-desc">Look around</div>
+
+              <div class="controls-key">LMB</div>
+              <div class="controls-desc">Break block</div>
+
+              <div class="controls-key">RMB</div>
+              <div class="controls-desc">Place block</div>
+
+              <div class="controls-key">B</div>
+              <div class="controls-desc">Open block picker</div>
+
+              <div class="controls-key">Ctrl</div>
+              <div class="controls-desc">Sneak</div>
+
+              <div class="controls-key">Shift + W</div>
+              <div class="controls-desc">Sprint</div>
+
+              <div class="controls-key">V</div>
+              <div class="controls-desc">Change viewpoint</div>
+
+              <div class="controls-key">Esc</div>
+              <div class="controls-desc">Pause / Options</div>
+            </div>
+          </div>
+        </div>
+
+        <button id="regen-btn" class="menu-button">Create World</button>
+
+        <p class="menu-tip">
+          Tip: higher view distance and FOV look cooler, but cost performance.
+        </p>
+      </div>
+    </div>
+
+    <!-- ===== Loading Screen ===== -->
+    <div id="loading-screen">
+      <div id="loading-text">Generating world…</div>
+      <div id="loading-bar-container">
+        <div id="loading-bar"></div>
+      </div>
+      <div class="loading-tip">
+        Loading VoxelCraft world... please don&apos;t alt+F4.
+      </div>
+    </div>
+
+    <!-- ===== Game Canvas ===== -->
+    <div id="screenDiv"></div>
+
+    <!-- === HUD overlay (crosshair + underwater tint) === -->
+    <div id="hud">
+      <div id="water-tint"></div>
+      <div id="crosshair"></div>
+    </div>
+
+    <!-- ===== In-game Options Menu (ESC) ===== -->
+    <div id="options-menu" class="menu-overlay hidden">
+      <div class="menu-panel">
+        <h2 class="menu-title" style="font-size: 18px">Game Menu</h2>
+        <p class="menu-subtitle">Paused – adjust settings or return</p>
+
+        <div class="menu-section-label">View Distance (Chunks)</div>
+        <div class="menu-row">
+          <input
+            type="range"
+            id="options-radius-slider"
+            class="menu-slider"
+            min="1"
+            max="10"
+            value="5"
+          />
+          <span id="options-radius-value" class="value-badge">5</span>
+        </div>
+
+        <div class="menu-section-label">Field of View (FOV)</div>
+        <div class="menu-row">
+          <input
+            type="range"
+            id="options-fov-slider"
+            class="menu-slider"
+            min="40"
+            max="120"
+            value="80"
+          />
+          <span id="options-fov-value" class="value-badge">80°</span>
+        </div>
+
+        <button id="options-resume-btn" class="menu-button">
+          Back to Game
+        </button>
+        <button id="options-mainmenu-btn" class="menu-button secondary">
+          Return to World Select
+        </button>
+
+        <p class="menu-tip">Press ESC to open or close this menu.</p>
+      </div>
+    </div>
+
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "../libs/threeJS/build/three.module.js"
+        }
+      }
+    </script>
+
+    <script src="main.js" type="module" defer></script>
+  </body>
+</html>
