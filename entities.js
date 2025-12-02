@@ -2613,6 +2613,14 @@ export class GrPlayer extends GrEntity {
         );
       }
 
+      if (e.code === "KeyL") {
+        this.world.spawnMobAt("pig", this.pos.x, this.pos.y + 4, this.pos.z);
+      }
+
+      if (e.code === "KeyJ") {
+        this.world.spawnMobAt("sheep", this.pos.x, this.pos.y + 4, this.pos.z);
+      }
+
       if (e.code === "KeyC") {
         this.setHeldItem(null);
       }
