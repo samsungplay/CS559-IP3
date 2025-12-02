@@ -2265,6 +2265,7 @@ export class GrCreeper extends GrEntity {
   // ⭐ Called after base physics each tick
   stepTick(delta) {
     super.stepTick(delta);
+    if (this.isDead) return;
 
     const dt = Math.min(delta * 0.001, 0.05);
     this._updateChaseAndExplosion(dt);
@@ -2272,7 +2273,7 @@ export class GrCreeper extends GrEntity {
 
   _updateChaseAndExplosion(dt) {
     const player = this._getPlayer();
-    if (!player || this.dead) {
+    if (!player || this.isDead) {
       this._chasingPlayer = false;
       this._resetFuseAndFlash();
       return;
@@ -2400,6 +2401,34 @@ export class GrCreeper extends GrEntity {
         }
       }
       this.world.endBatch();
+
+      // NEW: Damage other mobs
+      if (this.world && this.world.mobs) {
+        for (const mob of this.world.mobs) {
+          if (mob === this) continue; // Don't hurt self (already despawning)
+
+          const dist = this.pos.distanceTo(mob.pos);
+
+          // Check if within explosion radius
+          if (dist <= this.explodeDamageRadius) {
+            // 1. Apply Damage
+            mob.health -= 10;
+
+            // 2. Apply Knockback (Simulate explosion push)
+            const push = mob.pos.clone().sub(this.pos).normalize();
+            mob.knockbackVel.copy(push).multiplyScalar(this.explodeKnockback);
+            mob.verticalVel += this.explodeKnockUp;
+
+            // 3. Check for death immediately
+            if (mob.health <= 0 && !mob.isDead) {
+              mob._startDeath();
+            } else {
+              // Trigger hurt animation/color
+              mob.hurtTimer = mob.hurtDuration;
+            }
+          }
+        }
+      }
     }
 
     if (player && player.pos) {
@@ -4009,48 +4038,78 @@ export class GrPlayer extends GrEntity {
   }
 
   _handlePrimaryInteraction() {
-    if (!this.camera || !this.scene) return;
+    if (!this.camera || !this.world) return;
+
+    // Visual feedback immediately
+    this.triggerHandSwing();
 
     const REACH = this.reachDistance;
-
     const origin = this.camera.position.clone();
     const dir = new T.Vector3();
     this.camera.getWorldDirection(dir).normalize();
 
-    const camToPlayer = origin.distanceTo(this.pos);
-    const maxDist = REACH + camToPlayer + 0.5;
+    // Create a mathematical ray from camera
+    const ray = new T.Ray(origin, dir);
 
-    const raycaster = new T.Raycaster(origin, dir, 0, maxDist);
-    const intersects = raycaster.intersectObjects(this.scene.children, true);
+    // --- 1. Find the Closest Mob in the Ray's path ---
+    let closestMob = null;
+    let closestMobDist = REACH; // Only care if within reach
 
-    if (!intersects.length) return;
+    if (this.world.mobs) {
+      for (const mob of this.world.mobs) {
+        // Ignore self and dead mobs
+        if (mob === this || mob.isDead) continue;
 
-    // ✅ We now take the FIRST valid hit within reach
-    for (const hit of intersects) {
-      const hitPoint = hit.point;
-      const distFromPlayer = hitPoint.distanceTo(this.pos);
+        // Calculate mob center (approximate waist/chest level)
+        // using pos.y (feet) + half height
+        const mobCenter = mob.pos
+          .clone()
+          .add(new T.Vector3(0, mob.height * 0.5, 0));
 
-      if (distFromPlayer > REACH) continue;
+        // Get perpendicular distance from the Ray line to the Mob center point
+        const distSqToRay = ray.distanceSqToPoint(mobCenter);
 
-      const obj = hit.object;
-      const entity = obj.userData.entity;
+        // Define a "Hit Radius".
+        // We multiply halfWidth by ~1.5 to make hitting feel "generous" and reliable.
+        const hitRadius = (mob.halfWidth || 0.4) * 1.5;
 
-      // 1️⃣ If first visible hit is an entity → attack
-      if (entity instanceof GrEntity && entity !== this) {
-        entity.onHitByPlayer(this);
-        return;
+        // If the ray passes close enough to the mob center...
+        if (distSqToRay < hitRadius * hitRadius) {
+          // Check how far away the mob is from the camera
+          const distToCam = origin.distanceTo(mobCenter);
+
+          // Keep the closest one found so far
+          if (distToCam < closestMobDist) {
+            closestMobDist = distToCam;
+            closestMob = mob;
+          }
+        }
       }
+    }
 
-      // 2️⃣ Otherwise it's a block → break block and STOP
-      const blockPos = this._aimBlock;
+    // --- 2. Determine Distance to Aimed Block ---
+    // (GrPlayer already calculates _aimBlock in _updateAimTarget)
+    let blockDist = Infinity;
+    if (this._aimBlock) {
+      // Measure distance to the center of the aimed block
+      const blockCenter = this._aimBlock.clone().addScalar(0.5);
+      blockDist = origin.distanceTo(blockCenter);
+    }
 
-      if (!blockPos) return;
+    // --- 3. Interaction Logic (Mob vs Block) ---
 
-      const { x, y, z } = blockPos;
+    // If we hit a mob, and that mob is closer than the block we are looking at:
+    if (closestMob && closestMobDist < blockDist) {
+      closestMob.onHitByPlayer(this);
+      return;
+    }
+
+    // Otherwise, if no mob blocked the ray, break the block
+    if (this._aimBlock) {
+      const { x, y, z } = this._aimBlock;
       const id = this.world.getBlockWorld(x, y, z);
       if (id !== BLOCK.AIR) {
         this.world.setBlockWorld(x, y, z, BLOCK.AIR);
-        return;
       }
     }
   }

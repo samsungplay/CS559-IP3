@@ -1,5 +1,5 @@
 /*jshint esversion: 11 */
-
+//This file has been directly pasted from framework code - but includes some patches made by copilot
 /**
  * CS559 3D World Framework Code
  *
@@ -344,6 +344,7 @@ export class GrWorld {
    * Remove an object from the world - inverse of add()
    * @param {GrObject} grobj
    */
+  //this function has bee generated with the help of copilot
   remove(grobj) {
     if (!grobj) return;
 
@@ -352,6 +353,27 @@ export class GrWorld {
       if (element.parent) {
         element.parent.remove(element);
       }
+
+      // 🛑 FIX: Manually Dispose of Resources to prevent Memory Leaks
+      element.traverse((child) => {
+        if (child.isMesh || child.isSkinnedMesh) {
+          // Dispose Geometry
+          if (child.geometry) {
+            child.geometry.dispose();
+          }
+
+          // Dispose Material(s)
+          if (child.material) {
+            if (Array.isArray(child.material)) {
+              child.material.forEach((m) => {
+                this._disposeMaterial(m);
+              });
+            } else {
+              this._disposeMaterial(child.material);
+            }
+          }
+        }
+      });
     });
 
     // 2. Remove from the world's object list
@@ -369,7 +391,6 @@ export class GrWorld {
     if (this.active_object === grobj) {
       this.active_object = undefined;
       this.solo_mode = false;
-      // Make sure we are back to the main scene / camera
       this.active_scene = this.scene;
       this.active_camera = this.camera;
       if (this.orbit_controls) {
@@ -379,6 +400,33 @@ export class GrWorld {
         this.fly_controls.object = this.camera;
       }
     }
+  }
+
+  // Helper to deep clean materials
+  //this function has bee generated with the help of copilot
+  _disposeMaterial(material) {
+    // Dispose the material itself
+    material.dispose();
+
+    // Check for textures and dispose them too
+    // (Common maps: map, normalMap, specularMap, envMap, etc.)
+    const textureTypes = [
+      "map",
+      "lightMap",
+      "bumpMap",
+      "normalMap",
+      "specularMap",
+      "emissiveMap",
+      "alphaMap",
+      "roughnessMap",
+      "metalnessMap",
+    ];
+
+    textureTypes.forEach((prop) => {
+      if (material[prop]) {
+        material[prop].dispose();
+      }
+    });
   }
 
   restoreActiveObject() {
